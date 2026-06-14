@@ -18,7 +18,7 @@ def init_db():
         Master_ID TEXT PRIMARY KEY, Name TEXT, Role TEXT, Location TEXT, Consent_Given BOOLEAN, 
         EID_Verified BOOLEAN, Sub_Active BOOLEAN, Cert_Complete BOOLEAN, Integrity_Status TEXT)''')
     
-    # Event Log Tablosu (Testler için 6 sütunlu yapı)
+    # QA Testleri İçin Gerekli Event Log Tablosu (6 Sütunlu Yapı)
     cursor.execute('''CREATE TABLE IF NOT EXISTS Event_Stream_Logs (
         Event_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Action_ID TEXT, 
         Event_Timestamp DATETIME, Process_Status TEXT, Earned_Base_Points INTEGER)''')
@@ -52,7 +52,7 @@ def run_qa_suite():
     cursor = conn.cursor()
     
     # Test 1: Reward Duplication / Cooldown Abuse (PDF 679)
-    # 6 Sütunlu tabloya uygun 5 değer ekleniyor (Event_ID auto-increment)
+    # Event_Stream_Logs tablosuna 5 değer ekleniyor (Event_ID otomatik artar)
     cursor.execute("""
         INSERT INTO Event_Stream_Logs (Master_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Base_Points) 
         VALUES ('W-1', 'VIDEO', ?, 'Processed', 5)""", (datetime.datetime.now(),))
@@ -82,12 +82,12 @@ def load_data(query):
     conn.close()
     return df
 
-# --- DASHBOARD UI ---
 st.title("🌐 Buddy Rewards - Ultimate Ecosystem Dashboard")
-st.markdown("Includes Dynamic Weights, All Actors, Mega Locks, and Section 28 QA Suite.")
+st.markdown("Includes Dynamic Weights, All Actors (Captains, Champions, Transporters), Mega Locks, and Privacy Layers.")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚖️ Dynamic Weights", "👥 Scoreboard", "🏆 Mega & Fairness", "🔔 UI Privacy", "🧪 QA & Testing"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚖️ Dynamic Weights Engine", "👥 Ecosystem Scoreboard", "🏆 Mega & Monthly Fairness", "🔔 UI Light Layer (Privacy)", "🧪 QA & Testing"])
 
+# --- TAB 1 ---
 with tab1:
     st.header("Dynamic Active Weight Structure")
     col_w1, col_w2 = st.columns(2)
@@ -101,25 +101,30 @@ with tab1:
         normalized.append({'Component': comp, 'Normalized Weight': f"{norm:.2f}%", 'Status': "Active" if weight > 0 else "Ignored"})
     st.dataframe(pd.DataFrame(normalized), use_container_width=True)
 
+# --- TAB 2 ---
 with tab2:
-    st.header("Universal Action Registry")
+    st.header("Universal Action Registry - Points Dictionary")
     role = st.selectbox("Select Actor Role:", ["Worker", "Captain (Community)", "Champion (Marketplace)", "Transporter", "Supplier"])
-    data = {'Action': ['Points'], 'Points': [0]}
-    if role == "Worker": data = {'Action': ['Daily Video', 'Referral', 'Buddy Help'], 'Points': [5, 10, 10]}
-    elif role == "Captain (Community)": data = {'Action': ['Verified Signup', 'Active User'], 'Points': [2, 10]}
-    elif role == "Champion (Marketplace)": data = {'Action': ['Demand Created', 'Marketplace Closure'], 'Points': [20, 50]}
+    if role == "Worker": data = {'Action': ['Daily Video', 'Daily Quiz', 'Referral', 'Supplier Added', 'Fulfill Validated', 'Buddy Help'], 'Points': [5, 5, 10, 20, 40, 10]}
+    elif role == "Captain (Community)": data = {'Action': ['Verified Signup', 'Active User', 'Monthly Active Cluster', 'High Retention Cluster'], 'Points': [2, 10, 25, 40]}
+    elif role == "Champion (Marketplace)": data = {'Action': ['Demand Created', 'Demand Propagated', 'Supplier Activated', 'Transporter Activated', 'Marketplace Closure'], 'Points': [20, 10, 15, 15, 50]}
+    elif role == "Transporter": data = {'Action': ['Return Trip Enabled', 'Multi Pickup Enabled', 'Delivery Completed', 'Empty KM Reduction'], 'Points': [15, 20, 40, 25]}
+    else: data = {'Action': ['Profile Update', 'Quote Response', 'Fulfillment Closed'], 'Points': [5, 10, 40]}
     st.dataframe(pd.DataFrame(data), use_container_width=True)
 
+# --- TAB 3 ---
 with tab3:
     st.header("Monthly Soft Caps & Rollover System")
-    rollover_mode = st.toggle("ROLLOVER_MODE", value=True)
-    target_winners = st.slider("Target Winners (Soft Cap)", 1, 10, 2)
+    col_m1, col_m2 = st.columns([1, 2])
+    rollover_mode = col_m1.toggle("ROLLOVER_MODE", value=True)
+    target_winners = col_m1.slider("Target Winners (Soft Cap)", 1, 10, 2)
     df_scores = load_data("SELECT u.Master_ID, u.Role, s.Base_Score, s.Rollover_Bonus FROM Global_Users u JOIN Monthly_Scores s ON u.Master_ID = s.Master_ID")
     df_scores['Final_Score'] = df_scores.apply(lambda r: r['Base_Score'] + r['Rollover_Bonus'] if rollover_mode else r['Base_Score'], axis=1)
     df_scores = df_scores.sort_values(by='Final_Score', ascending=False)
     df_scores['Status'] = ["✅ Selected" if i < target_winners else "❌ Rolled Over" for i in range(len(df_scores))]
-    st.dataframe(df_scores, use_container_width=True)
+    col_m2.dataframe(df_scores[['Master_ID', 'Role', 'Final_Score', 'Status']], use_container_width=True)
 
+# --- TAB 4 ---
 with tab4:
     st.header("Reward Celebration Light Layer")
     df_users = load_data("SELECT Master_ID, Name, Location, Consent_Given, Role FROM Global_Users")
@@ -129,9 +134,16 @@ with tab4:
         msg = f"🎉 {user_row['Name']} from {user_row['Location']} unlocked a Monthly Benefit!" if user_row['Consent_Given'] else f"🎉 A {user_row['Role'].lower()} from {user_row['Location']} unlocked a Monthly Benefit!"
         st.success(msg)
 
+# --- TAB 5 ---
 with tab5:
     st.header("QA & Testing Panel (Section 28)")
     if st.button("🚀 Run All QA Tests"):
         results = run_qa_suite()
         st.table(results)
         st.success("Test Suite Completed: All Section 28 requirements validated.")
+    
+    st.divider()
+    if st.button("🔍 View Event Logs (Proof of Tests)"):
+        df_logs = load_data("SELECT * FROM Event_Stream_Logs ORDER BY Event_Timestamp DESC LIMIT 10")
+        st.subheader("Last 10 Database Events:")
+        st.dataframe(df_logs, use_container_width=True)
