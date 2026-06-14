@@ -21,7 +21,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Worker", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
     ("Worker", "WORKER_QUIZ_ATTEMPT", "Retention", 5, 1440, 0, True, 30),
     ("Worker", "WORKER_REFERRAL", "Growth", 10, 0, +2, True, 50),
-    ("Worker", "SUPPLIER_ADDED", "Growth", 20, 60, +5, True, 10),     # EKSİKLİK GİDERİLDİ
+    ("Worker", "SUPPLIER_ADDED", "Growth", 20, 60, +5, True, 10),      # EKSİKLİK GİDERİLDİ
     ("Worker", "FULFILL_VALIDATED", "Trust", 40, 0, +10, True, 20),    # EKSİKLİK GİDERİLDİ
     ("Worker", "BUDDY_HELP", "Trigger", 10, 120, +5, True, 10),        # EKSİKLİK GİDERİLDİ
     
@@ -207,12 +207,12 @@ with tab1:
     st.header("System Dynamics & Universal Registry")
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.subheader("Universal Action Registry (Point 7)")
+        st.subheader("Universal Action Registry")
         df_registry = pd.read_sql_query("SELECT * FROM Action_Registry", sqlite3.connect(DB_FILE))
         st.dataframe(df_registry, use_container_width=True)
     with c2:
         st.subheader("Global Engine Settings")
-        st.session_state.rollover_mode = st.toggle("ROLLOVER_MODE (Point 6)", st.session_state.rollover_mode)
+        st.session_state.rollover_mode = st.toggle("ROLLOVER_MODE", st.session_state.rollover_mode)
         st.metric("Current Simulation Month", st.session_state.current_simulation_month)
 
 with tab2:
@@ -229,7 +229,7 @@ with tab2:
         
     st.dataframe(df_users.style.map(color_status, subset=['Action_Status']), use_container_width=True)
     
-    st.subheader("Duplicate Detection (Point 9)")
+    st.subheader("Duplicate Detection")
     c_eid = st.text_input("Enter EID to check:")
     if st.button("Check Network for Duplicates"):
         dups = mock_duplicate_check(c_eid, "", "")
@@ -247,7 +247,7 @@ with tab3:
     
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("1. Standard Action (Point 4 & 8 & 10)")
+        st.subheader("1. Standard Action")
         available_actions = pd.read_sql_query(f"SELECT Action_ID FROM Action_Registry WHERE Role='{user_info['Role']}'", sqlite3.connect(DB_FILE))['Action_ID'].tolist()
         act = st.selectbox("Action Type:", available_actions)
         t_id = st.text_input("Target User ID (Optional for Pair Cooldown):", placeholder="e.g. ID-5")
@@ -261,7 +261,7 @@ with tab3:
                 
     with col2:
         st.subheader("Bulk Simulation")
-        st.caption("Aylık minimum limitleri (Point 1) test edebilmek için hızlı veri pompalar.")
+        st.caption("Aylık minimum limitleri test edebilmek için hızlı veri pompalar.")
         if st.button("Simulate Minimum Qualifications for Workers"):
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
@@ -280,7 +280,7 @@ with tab4:
     c1, c2 = st.columns(2)
     
     with c1:
-        st.subheader("Mega Reward Tracker (Point 2)")
+        st.subheader("Mega Reward Tracker")
         mega_user = st.selectbox("Select Worker:", df_users_base[df_users_base['Role'] == 'Worker']['Master_ID'].tolist())
         if mega_user:
             cur = sqlite3.connect(DB_FILE).cursor()
@@ -304,7 +304,7 @@ with tab4:
                 st.progress(min(count/target, 1.0))
                 
     with c2:
-        st.subheader("Monthly Fairness Selection (Point 1, 5, 6)")
+        st.subheader("Monthly Fairness Selection")
         t_cap = st.slider("Total Winner Limit (Soft Cap):", 1, 10, 3)
         
         if st.button("Run Month End Engine"):
