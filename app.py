@@ -3,11 +3,11 @@ import sqlite3
 import pandas as pd
 import datetime
 
-# --- YAPI VE SAYFA AYARLARI ---
+# --- PAGE SETTINGS ---
 st.set_page_config(page_title="Buddy Rewards - Ultimate Engine", layout="wide")
-DB_FILE = 'buddy_rewards_ultimate.db'
+DB_FILE = 'buddy_rewards_v3.db' # Changed to v3 to ensure a fresh database build
 
-# --- 1. MERKEZİ ROL, YETENEK VE SOĞUMA SÜRESİ TANIMLARI ---
+# --- 1. CORE ROLE, ACTION AND COOLDOWN REGISTRY ---
 ROLE_REGISTRY = {
     "Worker": {"Actions": {"WORKER_VIDEO_WATCH": 5, "WORKER_QUIZ_ATTEMPT": 5, "WORKER_REFERRAL": 10}, "Category": "Engagement"},
     "Supplier": {"Actions": {"PROFILE": 5, "QUOTE": 10, "FULFILLMENT": 40}, "Category": "Commerce"},
@@ -18,7 +18,7 @@ ROLE_REGISTRY = {
 }
 
 ACTION_COOLDOWNS = {
-    "WORKER_VIDEO_WATCH": 1440, # 24 saat (dakika)
+    "WORKER_VIDEO_WATCH": 1440, # 24 hours (in minutes)
     "WORKER_QUIZ_ATTEMPT": 1440,
     "WORKER_REFERRAL": 0,
     "PROFILE": 0, "QUOTE": 60, "FULFILLMENT": 0,
@@ -34,7 +34,7 @@ MEGA_TARGETS = {
     'WORKER_REFERRAL': 150
 }
 
-# --- 2. VERİ TABANI BAŞLATMA ---
+# --- 2. DATABASE INITIALIZATION ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -58,7 +58,7 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS Monthly_Qualified_Users (
         Master_ID TEXT PRIMARY KEY, Total_Score REAL, Rollover_Bonus REAL DEFAULT 0)''')
 
-    # Tohum Veri (Seed Data)
+    # Seed Data Generation
     cursor.execute("SELECT COUNT(*) FROM Global_Users")
     if cursor.fetchone()[0] == 0:
         roles_list = list(ROLE_REGISTRY.keys())
@@ -83,16 +83,16 @@ def init_db():
 
 init_db()
 
-# --- 3. CORE ENGINE FONKSİYONLARI ---
+# --- 3. CORE ENGINE FUNCTIONS ---
 
-# Eksik 1: Bekleme Süresi (Cooldown) ve Asenkron İşlem Yönetimi
 def execute_action(master_id, action_id, base_points):
+    """Processes an action by verifying the cooldown limits."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     now = datetime.datetime.now()
     cooldown = ACTION_COOLDOWNS.get(action_id, 0)
     
-    # Cooldown Kontrolü
+    # Cooldown Verification
     cursor.execute("""
         SELECT COUNT(*) FROM Event_Stream_Logs 
         WHERE Master_ID = ? AND Action_ID = ? AND Process_Status = 'Processed'
@@ -102,7 +102,7 @@ def execute_action(master_id, action_id, base_points):
     recent_actions = cursor.fetchone()[0]
     
     if recent_actions > 0:
-        status = 'Blocked' # Cooldown ihlali
+        status = 'Blocked' # Cooldown violation
         points = 0
     else:
         status = 'Processed'
@@ -114,8 +114,8 @@ def execute_action(master_id, action_id, base_points):
     conn.close()
     return status, points
 
-# Eksik 2: Dinamik Puan Ağırlıklandırma
 def get_normalized_weights(has_sub, has_cert):
+    """Calculates dynamic point weights based on active subscriptions and certifications."""
     base_weights = {"Marketplace": 30, "Referral": 20, "Habit": 15, "Subscription": 20, "Certification": 15}
     active_weights = {k: base_weights[k] for k in ["Marketplace", "Referral", "Habit"]}
     
@@ -125,8 +125,8 @@ def get_normalized_weights(has_sub, has_cert):
     total = sum(active_weights.values())
     return {k: round((v / total) * 100, 2) for k, v in active_weights.items()}
 
-# Eksik 5: Yayılım Zinciri (Propagation)
 def trigger_propagation(master_id, item_id, stage):
+    """Logs the multi-stage propagation of marketplace actions (Share, Open, Engage, Fulfill)."""
     matrix = {'SHARE': 2, 'OPEN': 5, 'ENGAGE': 10, 'FULFILL': 50}
     pts = matrix.get(stage, 0)
     conn = sqlite3.connect(DB_FILE)
@@ -137,14 +137,14 @@ def trigger_propagation(master_id, item_id, stage):
     conn.close()
     return pts
 
-# Eksik 6: Güvenlik ve Dürüstlük (Integrity)
 def flag_user(master_id):
+    """Reduces the integrity score of a user upon suspicious activity detection."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT Integrity_Score FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
     score = cursor.fetchone()[0]
     
-    new_score = max(0, score - 15) # Her bayrak -15 puan
+    new_score = max(0, score - 15) # Penalty per flag: -15 points
     status = 'Normal' if new_score >= 80 else 'Warning' if new_score >= 60 else 'Review' if new_score >= 40 else 'Block'
     
     cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, status, master_id))
@@ -152,15 +152,15 @@ def flag_user(master_id):
     conn.close()
     return new_score, status
 
-# --- 4. STREAMLIT DASHBOARD ARAYÜZÜ ---
+# --- 4. STREAMLIT DASHBOARD UI ---
 st.title("🌐 Buddy Rewards - Ultimate Ecosystem Engine")
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚙️ Engine Setup", "👥 Users & Integrity", "🚀 Action Playground", "🏆 Mega & Fairness", "📜 Logs"])
 
 with tab1:
-    st.header("Sistem Dinamikleri")
+    st.header("System Dynamics")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("Action Registry & Limits")
+        st.subheader("Action Registry & Point Allocation")
         st.json(ROLE_REGISTRY)
     with c2:
         st.subheader("Cooldown Matrix (Minutes)")
@@ -180,49 +180,48 @@ with tab2:
     st.dataframe(df_users.style.map(color_status, subset=['Action_Status']), use_container_width=True)
 
 with tab3:
-    st.header("Aksiyon ve Simülasyon Motoru")
-    user_id = st.selectbox("Simüle Edilecek Aktör Seç:", df_users['Master_ID'].tolist())
+    st.header("Action and Simulation Engine")
+    user_id = st.selectbox("Select Actor to Simulate:", df_users['Master_ID'].tolist())
     user_info = pd.read_sql_query(f"SELECT * FROM Global_Users WHERE Master_ID='{user_id}'", sqlite3.connect(DB_FILE)).iloc[0]
     
-    st.markdown(f"**Aktif Rol:** {user_info['Role']} | **Abonelik:** {user_info['Has_Subscription']} | **Sertifika:** {user_info['Has_Certification']}")
+    st.markdown(f"**Active Role:** {user_info['Role']} | **Subscription:** {bool(user_info['Has_Subscription'])} | **Certification:** {bool(user_info['Has_Certification'])}")
     
-    # Eksik 2 Testi
-    st.info(f"Dinamik Puan Ağırlığı: {get_normalized_weights(user_info['Has_Subscription'], user_info['Has_Certification'])}")
+    st.info(f"Dynamic Point Weights: {get_normalized_weights(user_info['Has_Subscription'], user_info['Has_Certification'])}")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.subheader("1. Standart Aksiyon")
+        st.subheader("1. Standard Action")
         available_actions = list(ROLE_REGISTRY[user_info['Role']]["Actions"].keys())
-        act = st.selectbox("Eylem:", available_actions)
-        if st.button("Çalıştır"):
+        act = st.selectbox("Action Type:", available_actions)
+        if st.button("Execute Action"):
             pts = ROLE_REGISTRY[user_info['Role']]["Actions"][act]
             status, earned = execute_action(user_id, act, pts)
             if status == 'Processed':
-                st.success(f"Başarılı! {earned} Puan eklendi.")
+                st.success(f"Success! {earned} Points granted.")
             else:
-                st.error(f"Engellendi: Cooldown süresi dolmadı.")
+                st.error(f"Blocked: Cooldown period has not expired.")
                 
     with col2:
-        st.subheader("2. Yayılım (Propagation)")
-        prop_stage = st.selectbox("Yayılım Aşaması:", ["SHARE", "OPEN", "ENGAGE", "FULFILL"])
-        if st.button("Zinciri Tetikle"):
+        st.subheader("2. Propagation")
+        prop_stage = st.selectbox("Propagation Stage:", ["SHARE", "OPEN", "ENGAGE", "FULFILL"])
+        if st.button("Trigger Chain"):
             earned = trigger_propagation(user_id, "REQ-101", prop_stage)
-            st.success(f"Yayılım Başarılı: +{earned} Puan")
+            st.success(f"Propagation Successful: +{earned} Points")
             
     with col3:
-        st.subheader("3. Dürüstlük (Integrity)")
-        if st.button("Şüpheli İşlem Bildir (Flag)"):
+        st.subheader("3. Integrity Engine")
+        if st.button("Report Suspicious Activity (Flag)"):
             n_score, n_status = flag_user(user_id)
-            st.warning(f"Kullanıcı Flaglendi! Yeni Puan: {n_score} | Durum: {n_status}")
+            st.warning(f"User Flagged! New Score: {n_score} | Status: {n_status}")
 
 with tab4:
-    st.header("Ödül Kalifikasyonu ve Adil Seçim Motoru")
+    st.header("Reward Qualification and Fairness Engine")
     c1, c2 = st.columns(2)
     
     with c1:
-        st.subheader("Eksik 3: Mega Ödül İlerlemesi")
-        mega_user = st.selectbox("İşçi Seç:", df_users[df_users['Role'] == 'Worker']['Master_ID'].tolist())
+        st.subheader("Mega Reward Progress Tracker")
+        mega_user = st.selectbox("Select Worker:", df_users[df_users['Role'] == 'Worker']['Master_ID'].tolist())
         if mega_user:
             for action, target in MEGA_TARGETS.items():
                 cur = sqlite3.connect(DB_FILE).cursor()
@@ -232,12 +231,12 @@ with tab4:
                 st.progress(min(count/target, 1.0))
                 
     with c2:
-        st.subheader("Eksik 4: Aylık Adil Seçim (Fairness)")
-        t_cap = st.slider("Toplam Kazanan Limiti:", 1, 20, 5)
-        n_cap = st.slider("Aynı Uyruk Limiti:", 1, 10, 2)
-        c_cap = st.slider("Aynı Kamp Limiti:", 1, 10, 2)
+        st.subheader("Monthly Fairness Selection")
+        t_cap = st.slider("Total Winner Limit (Soft Cap):", 1, 20, 5)
+        n_cap = st.slider("Max Limit per Nationality:", 1, 10, 2)
+        c_cap = st.slider("Max Limit per Labor Cluster:", 1, 10, 2)
         
-        if st.button("Motoru Çalıştır"):
+        if st.button("Run Fairness Engine"):
             df_monthly = pd.read_sql_query("""
                 SELECT u.Master_ID, u.Nationality, u.Labor_Cluster, m.Total_Score, m.Rollover_Bonus,
                        (m.Total_Score + m.Rollover_Bonus) as Final_Score
@@ -255,19 +254,19 @@ with tab4:
                 nat, cluster = row['Nationality'], row['Labor_Cluster']
                 
                 if nat_count.get(nat, 0) < n_cap and cluster_count.get(cluster, 0) < c_cap:
-                    row['Status'] = '✅ Seçildi'
+                    row['Selection_Status'] = '✅ Selected'
                     winners.append(row)
                     nat_count[nat] = nat_count.get(nat, 0) + 1
                     cluster_count[cluster] = cluster_count.get(cluster, 0) + 1
                 else:
-                    row['Status'] = '❌ Elendi (Adalet Limiti)'
+                    row['Selection_Status'] = '❌ Eliminated (Fairness Limit)'
                     winners.append(row)
             
-            st.dataframe(pd.DataFrame(winners)[['Master_ID', 'Nationality', 'Labor_Cluster', 'Final_Score', 'Status']], use_container_width=True)
+            st.dataframe(pd.DataFrame(winners)[['Master_ID', 'Nationality', 'Labor_Cluster', 'Final_Score', 'Selection_Status']], use_container_width=True)
 
 with tab5:
-    st.header("Sistem Logları")
-    log_type = st.radio("Log Tipi:", ["Event Stream", "Propagation Log"])
+    st.header("System Logs")
+    log_type = st.radio("Select Log Type:", ["Event Stream", "Propagation Log"])
     if log_type == "Event Stream":
         st.dataframe(pd.read_sql_query("SELECT * FROM Event_Stream_Logs ORDER BY Event_ID DESC LIMIT 50", sqlite3.connect(DB_FILE)), use_container_width=True)
     else:
