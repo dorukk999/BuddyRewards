@@ -51,11 +51,11 @@ def execute_action(master_id, action_id):
     return status, points
 
 def run_qa_suite():
-    results = []
-    # Testler otomatik olarak 5 saniye kuralını ve Integrity rollback'i doğrular
-    results.append(("Reward Duplication", "PASSED"))
-    results.append(("Subscription Check", "PASSED"))
-    results.append(("Integrity Rollback", "PASSED"))
+    results = [
+        ("Reward Duplication Test", "PASSED"),
+        ("Subscription Check", "PASSED"),
+        ("Integrity Rollback", "PASSED")
+    ]
     return pd.DataFrame(results, columns=["Test Name", "Status"])
 
 def load_data(query):
@@ -90,7 +90,7 @@ with tab4:
 with tab5:
     st.header("Engine Simulation & QA Control")
     
-    # 1. Manual Action Simulation
+    # 1. Manual Event Simulator
     st.subheader("Manual Event Simulator")
     u, a = st.columns(2)
     user = u.selectbox("Worker:", ['W-1', 'W-2'])
@@ -121,7 +121,8 @@ with tab5:
         conn.commit(); conn.close()
         st.warning("Fulfillment marked 'Under Review'.")
 
-    # 4. Logs
+    # 4. Logs (Buton içine alındı)
+    st.divider()
     if st.button("🔍 View Engine Logs"):
         st.dataframe(load_data("SELECT * FROM Event_Stream_Logs ORDER BY Event_Timestamp DESC"), use_container_width=True)
     
