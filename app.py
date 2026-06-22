@@ -49,6 +49,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Champion", "CLOSURE", "Completion", 50, 0, +20, False, 50)
 ]
 
+# KURAL 10: MEGA HEDEFLER (Cycle 1 için)
 MEGA_TARGETS = {
     'WORKER_VIDEO_WATCH': 180, 'WORKER_QUIZ_ATTEMPT': 180, 'WORKER_REFERRAL': 150,
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12              
@@ -132,7 +133,7 @@ def init_db():
             if secondary_roles:
                 cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, secondary_roles))
             
-            cursor.execute("INSERT INTO Monthly_Qualified_Users VALUES (?, ?, ?)", (mid, 0, 0)) # Base score is dynamically fetched now
+            cursor.execute("INSERT INTO Monthly_Qualified_Users VALUES (?, ?, ?)", (mid, 0, 0)) 
             
     conn.commit()
     conn.close()
@@ -291,7 +292,7 @@ with tab1:
 with tab2:
     st.header("Ecosystem Actors & Security")
     df_users = pd.read_sql_query("""
-        SELECT u.Master_ID, u.Primary_Role, u.Secondary_Roles, u.EID_Verified,
+        SELECT u.Master_ID, u.Primary_Role, u.Secondary_Roles, u.EID_Verified, u.Has_Certification, u.Continuous_Paid_Months,
         i.Integrity_Score, i.Action_Status 
         FROM Global_Users u JOIN Integrity_Profiles i ON u.Master_ID = i.Master_ID
     """, sqlite3.connect(DB_FILE))
@@ -333,7 +334,6 @@ with tab3:
                 elif status == 'CAPPED': st.info(msg) 
                 else: st.error(status)
                 
-        # Toplu test verisi pompalamak için (Sınırları geçebilmek adına otomatik SETTLED yapar)
         st.markdown("---")
         st.caption("Aylık minimum limitleri aşmak için Worker test verisi (Otomatik Onaylı)")
         if st.button("Simulate 30/30/15 Minimums for Top 5 Workers"):
@@ -342,20 +342,16 @@ with tab3:
             workers = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
             now = datetime.datetime.now()
             for w in workers[:5]: 
-                # Doğrudan SETTLED statüsü ile veritabanına basıyoruz ki barajı geçsinler
                 for _ in range(30): 
                     cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5)", (w, now))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
                 for _ in range(30): 
                     cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5)", (w, now))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
                 for _ in range(15): 
                     cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10)", (w, now))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
             conn.commit()
             conn.close()
             st.success("Successfully pushed 30/30/15 SETTLED events for top 5 workers!")
-                    
+            
     with col2:
         st.subheader("2. Admin Resolution Desk")
         st.caption("Puanların kesinleşmesi veya itirazların karara bağlanması")
@@ -397,153 +393,215 @@ with tab3:
         else:
             st.write("Karar bekleyen bir itiraz bulunmuyor.")
 
-# YENİLİK BAŞLANGICI: TAMAMEN YENİLENMİŞ TAB 4 (ADALET VE SEÇİM MOTORU)
 with tab4:
     st.header("Reward Qualification and Fairness Engine")
     
-    st.markdown("### ⚙️ Distribution Controls (Admin Limits)")
-    c_cap1, c_cap2, c_cap3 = st.columns(3)
-    t_cap = c_cap1.number_input("Total Winner Cap:", min_value=1, max_value=20, value=5)
-    nat_cap = c_cap2.number_input("Max Winners per Nationality:", min_value=1, max_value=10, value=2)
-    camp_cap = c_cap3.number_input("Max Winners per Camp (Cluster):", min_value=1, max_value=10, value=2)
+    t4_col1, t4_col2 = st.columns(2)
     
-    if st.button("🚀 Run Month-End Selection Engine", type="primary"):
-        conn = sqlite3.connect(DB_FILE)
-        cur = conn.cursor()
-        curr_month = st.session_state.current_simulation_month
+    # SOL TARAF: AYLIK ADALET MOTORU
+    with t4_col1:
+        st.markdown("### 📅 Monthly Selection Engine")
+        st.caption("Zorunlu barajları geçenleri milliyet/kamp kotasına göre filtreler.")
+        c_cap1, c_cap2, c_cap3 = st.columns(3)
+        t_cap = c_cap1.number_input("Total Winner Cap:", min_value=1, max_value=20, value=5)
+        nat_cap = c_cap2.number_input("Max per Nationality:", min_value=1, max_value=10, value=2)
+        camp_cap = c_cap3.number_input("Max per Camp:", min_value=1, max_value=10, value=2)
         
-        # 1. Tüm kullanıcıları ve temel cüzdan verilerini çek
-        users_df = pd.read_sql_query("""
-            SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, 
-                   i.Integrity_Score, i.Action_Status,
-                   COALESCE((SELECT SUM(Settled_Points) FROM Reward_Ledgers WHERE Master_ID = u.Master_ID), 0) as Base_Score,
-                   m.Rollover_Bonus
-            FROM Global_Users u
-            JOIN Integrity_Profiles i ON u.Master_ID = i.Master_ID
-            JOIN Monthly_Qualified_Users m ON u.Master_ID = m.Master_ID
-        """, conn)
-        
-        qualified_pool = []
-        disqualified_pool = []
-        
-        # 2. Mandatory Gates (Zorunlu Eşikler) Filtrelemesi
-        for _, u in users_df.iterrows():
-            mid = u['Master_ID']
-            role = u['Primary_Role']
+        if st.button("🚀 Run Monthly Engine", type="primary"):
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            curr_month = st.session_state.current_simulation_month
             
-            # KURAL: Integrity Gate (Madde 9.1)
-            if u['Integrity_Score'] < 80 or u['Action_Status'] == 'Block':
-                disqualified_pool.append({'Master_ID': mid, 'Final_Score': 0, 'Reason': 'INTEGRITY_FAILED'})
-                continue
+            users_df = pd.read_sql_query("""
+                SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, 
+                       i.Integrity_Score, i.Action_Status,
+                       COALESCE((SELECT SUM(Settled_Points) FROM Reward_Ledgers WHERE Master_ID = u.Master_ID), 0) as Base_Score,
+                       m.Rollover_Bonus
+                FROM Global_Users u
+                JOIN Integrity_Profiles i ON u.Master_ID = i.Master_ID
+                JOIN Monthly_Qualified_Users m ON u.Master_ID = m.Master_ID
+            """, conn)
+            
+            qualified_pool = []
+            disqualified_pool = []
+            
+            for _, u in users_df.iterrows():
+                mid = u['Master_ID']
+                role = u['Primary_Role']
                 
-            # KURAL: Worker Survival Layer (30/30/15) (Madde 9.1)
-            if role == 'Worker':
-                cur.execute("""
-                    SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs 
-                    WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED')
-                    GROUP BY Action_ID
-                """, (mid,))
-                counts = dict(cur.fetchall())
-                vids = counts.get('WORKER_VIDEO_WATCH', 0)
-                quiz = counts.get('WORKER_QUIZ_ATTEMPT', 0)
-                refs = counts.get('WORKER_REFERRAL', 0)
-                
-                if vids < 30 or quiz < 30 or refs < 15:
-                    disqualified_pool.append({'Master_ID': mid, 'Final_Score': u['Base_Score'], 'Reason': 'HABIT_MIN_FAILED'})
+                if u['Integrity_Score'] < 80 or u['Action_Status'] == 'Block':
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
                     continue
-            
-            # Barajı geçenleri nitelikli havuza ekle
-            final_score = u['Base_Score'] + u['Rollover_Bonus']
-            qualified_pool.append({
-                'Master_ID': mid, 'Nationality': u['Nationality'], 'Camp': u['Labor_Cluster'], 
-                'Base_Score': u['Base_Score'], 'Rollover_Bonus': u['Rollover_Bonus'], 'Final_Score': final_score
-            })
-            
-        # 3. Sıralama ve Dağıtım Adaleti (Madde 9.5)
-        qualified_pool.sort(key=lambda x: x['Final_Score'], reverse=True)
-        
-        df_past = pd.read_sql_query("SELECT * FROM Past_Winners", conn)
-        last_month_winners = df_past[df_past['Win_Month'] == curr_month - 1]['Master_ID'].tolist()
-        older_winners = df_past[df_past['Win_Month'] < curr_month - 1]['Master_ID'].tolist()
-        
-        winners = []
-        rollovers = []
-        nat_counts = {}
-        camp_counts = {}
-        repeat_count = 0
-        max_repeats = int(t_cap * 0.20) 
-        
-        for cand in qualified_pool:
-            mid = cand['Master_ID']
-            nat = cand['Nationality']
-            camp = cand['Camp']
-            
-            # KURAL 9.3: Geçen ay kazananlar hariç tutulur
-            if mid in last_month_winners:
-                cand['Status'] = 'Excluded (Won Last Month)'
-                cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
-                rollovers.append(cand)
-                continue
+                    
+                if role == 'Worker':
+                    cur.execute("""
+                        SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs 
+                        WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED')
+                        GROUP BY Action_ID
+                    """, (mid,))
+                    counts = dict(cur.fetchall())
+                    vids = counts.get('WORKER_VIDEO_WATCH', 0)
+                    quiz = counts.get('WORKER_QUIZ_ATTEMPT', 0)
+                    refs = counts.get('WORKER_REFERRAL', 0)
+                    
+                    if vids < 30 or quiz < 30 or refs < 15:
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_VIDEO_MIN_FAILED' if vids<30 else 'REFERRAL_MIN_FAILED'})
+                        continue
                 
-            # KURAL 9.3: Eski kazananlar max %20 kotasına tabidir
-            if mid in older_winners:
-                if repeat_count >= max_repeats:
-                    cand['Status'] = 'Excluded (Repeat Cap)'
+                final_score = u['Base_Score'] + u['Rollover_Bonus']
+                qualified_pool.append({
+                    'Master_ID': mid, 'Nationality': u['Nationality'], 'Camp': u['Labor_Cluster'], 
+                    'Final_Score': final_score
+                })
+                
+            qualified_pool.sort(key=lambda x: x['Final_Score'], reverse=True)
+            df_past = pd.read_sql_query("SELECT * FROM Past_Winners", conn)
+            last_month_winners = df_past[df_past['Win_Month'] == curr_month - 1]['Master_ID'].tolist()
+            older_winners = df_past[df_past['Win_Month'] < curr_month - 1]['Master_ID'].tolist()
+            
+            winners = []
+            rollovers = []
+            nat_counts = {}
+            camp_counts = {}
+            repeat_count = 0
+            max_repeats = int(t_cap * 0.20) 
+            
+            for cand in qualified_pool:
+                mid = cand['Master_ID']
+                nat = cand['Nationality']
+                camp = cand['Camp']
+                
+                if mid in last_month_winners:
                     cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
                     rollovers.append(cand)
                     continue
+                if mid in older_winners:
+                    if repeat_count >= max_repeats:
+                        cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
+                        rollovers.append(cand)
+                        continue
+                    else: repeat_count += 1
+                
+                if nat_counts.get(nat, 0) >= nat_cap:
+                    cand['Reason_Code'] = 'NATIONALITY_CAP'
+                    rollovers.append(cand)
+                    continue
+                    
+                if camp_counts.get(camp, 0) >= camp_cap:
+                    cand['Reason_Code'] = 'CAMP_CAP'
+                    rollovers.append(cand)
+                    continue
+                    
+                if len(winners) < t_cap:
+                    cand['Reason_Code'] = 'APPROVED'
+                    winners.append(cand)
+                    nat_counts[nat] = nat_counts.get(nat, 0) + 1
+                    camp_counts[camp] = camp_counts.get(camp, 0) + 1
+                    cur.execute("INSERT INTO Past_Winners (Master_ID, Win_Month) VALUES (?, ?)", (mid, curr_month))
+                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
                 else:
-                    repeat_count += 1
+                    cand['Reason_Code'] = 'WINNER_CAP_FULL'
+                    rollovers.append(cand)
+                    
+            if st.session_state.rollover_mode:
+                for r in rollovers:
+                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = Rollover_Bonus + 5 WHERE Master_ID = ?", (r['Master_ID'],))
             
-            # KURAL 9.5: Milliyet ve Kamp Sınırları
-            if nat_counts.get(nat, 0) >= nat_cap:
-                cand['Status'] = 'Rolled Over'
-                cand['Reason_Code'] = 'NATIONALITY_CAP'
-                rollovers.append(cand)
-                continue
+            conn.commit()
+            conn.close()
+            st.session_state.current_simulation_month += 1
+            st.success(f"Month completed! Winners: {len(winners)}")
+            if winners: st.dataframe(pd.DataFrame(winners)[['Master_ID', 'Nationality', 'Camp', 'Reason_Code']], use_container_width=True)
+
+    # SAĞ TARAF: YEPYENİ MEGA ÖDÜL MOTORU
+    with t4_col2:
+        st.markdown("### 🌟 Mega Rewards Engine (6-Month)")
+        st.caption("Admin Toggles & Rules (Cycle 1 Evaluation)")
+        
+        m_cert = st.checkbox("Require Certification (T02)", value=True)
+        m_excl = st.checkbox("Exclude Monthly Winners (Cycle 1)", value=True)
+        m_grace = st.checkbox("Apply 1-Month Subscription Grace", value=False)
+        
+        # Test için veritabanına Mega kriterlerini aşacak şekilde sahte veri pompalama butonu
+        if st.button("Inject 6-Month Mega Data for ID-1", type="secondary"):
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            now = datetime.datetime.now()
+            # ID-1'e mega geçiş için gereken her şeyi fulleyelim
+            for _ in range(MEGA_TARGETS['WORKER_VIDEO_WATCH']): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED')", (now,))
+            for _ in range(MEGA_TARGETS['WORKER_QUIZ_ATTEMPT']): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED')", (now,))
+            for _ in range(MEGA_TARGETS['WORKER_REFERRAL']): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED')", (now,))
+            for _ in range(MEGA_TARGETS['SUPPLIER_ADDED']): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', 'SUPPLIER_ADDED', ?, 'SETTLED')", (now,))
+            for _ in range(MEGA_TARGETS['FULFILL_VALIDATED']): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', 'FULFILL_VALIDATED', ?, 'SETTLED')", (now,))
+            for _ in range(MEGA_TARGETS['BUDDY_HELP']): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', 'BUDDY_HELP', ?, 'SETTLED')", (now,))
+            # EID, Cert ve Ödeme aylarını da garantiye alalım
+            cur.execute("UPDATE Global_Users SET EID_Verified=1, Has_Certification=1, Continuous_Paid_Months=6 WHERE Master_ID='ID-1'")
+            cur.execute("UPDATE Integrity_Profiles SET Integrity_Score=100, Action_Status='Normal' WHERE Master_ID='ID-1'")
+            conn.commit()
+            conn.close()
+            st.success("ID-1 için 6 aylık kusursuz veriler yüklendi! Şimdi Mega Engine'i çalıştırabilirsiniz.")
+
+        if st.button("🚀 Run Mega Cycle Evaluation", type="primary"):
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            
+            workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users WHERE Primary_Role='Worker'", conn)
+            
+            mega_winners = []
+            mega_failed = []
+            
+            # KURAL 11: Cycle 1 abonelik toleransı hesaplaması
+            required_months = 2 if m_grace else 3 
+            
+            for _, w in workers.iterrows():
+                mid = w['Master_ID']
+                fail_reason = None
                 
-            if camp_counts.get(camp, 0) >= camp_cap:
-                cand['Status'] = 'Rolled Over'
-                cand['Reason_Code'] = 'CAMP_CAP'
-                rollovers.append(cand)
-                continue
+                # 1. Mandatory Gates Kontrolü
+                if not w['EID_Verified']: fail_reason = 'MEGA_EID_FAILED'
+                elif m_cert and not w['Has_Certification']: fail_reason = 'MEGA_CERT_FAILED'
+                elif w['Continuous_Paid_Months'] < required_months: fail_reason = 'MEGA_SUBSCRIPTION_FAILED'
+                else:
+                    cur.execute("SELECT Integrity_Score, Action_Status FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
+                    i_score, i_status = cur.fetchone()
+                    if i_score < 80 or i_status == 'Block': fail_reason = 'MEGA_INTEGRITY_FAILED'
                 
-            # Genel Tavan (Total Cap)
-            if len(winners) < t_cap:
-                cand['Status'] = '✅ WINNER'
-                cand['Reason_Code'] = 'APPROVED'
-                winners.append(cand)
-                nat_counts[nat] = nat_counts.get(nat, 0) + 1
-                camp_counts[camp] = camp_counts.get(camp, 0) + 1
-                
-                # Kazananı kaydet ve Rollover sıfırla
-                cur.execute("INSERT INTO Past_Winners (Master_ID, Win_Month) VALUES (?, ?)", (mid, curr_month))
-                cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
-            else:
-                cand['Status'] = 'Rolled Over'
-                cand['Reason_Code'] = 'WINNER_CAP_FULL'
-                rollovers.append(cand)
-                
-        # Kazanamayan geçerli adaylara (Rollovers) Rollover Bonus ekle (+5)
-        if st.session_state.rollover_mode:
-            for r in rollovers:
-                cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = Rollover_Bonus + 5 WHERE Master_ID = ?", (r['Master_ID'],))
-        
-        conn.commit()
-        conn.close()
-        
-        st.session_state.current_simulation_month += 1
-        st.success(f"Month {curr_month} completed! Adalet motoru barajları ve kotaları uyguladı.")
-        
-        st.markdown("#### 🏆 Funded Winners")
-        if winners: st.dataframe(pd.DataFrame(winners)[['Master_ID', 'Nationality', 'Camp', 'Final_Score', 'Status', 'Reason_Code']], use_container_width=True)
-        else: st.warning("Bu ay kotaları ve barajları aşarak kazanabilen kimse çıkmadı.")
-        
-        st.markdown("#### 🔄 Rolled Over (Yedekler - Gelecek ay +5 Bonus alacaklar)")
-        if rollovers: st.dataframe(pd.DataFrame(rollovers)[['Master_ID', 'Nationality', 'Camp', 'Final_Score', 'Reason_Code']], use_container_width=True)
-        
-        st.markdown("#### ❌ Disqualified (Baraja Takılanlar)")
-        if disqualified_pool: st.dataframe(pd.DataFrame(disqualified_pool), use_container_width=True)
+                # 2. Exclude Monthly Winners Kontrolü
+                if not fail_reason and m_excl:
+                    cur.execute("SELECT COUNT(*) FROM Past_Winners WHERE Master_ID=?", (mid,))
+                    if cur.fetchone()[0] > 0:
+                        fail_reason = 'MEGA_MONTHLY_WINNER_EXCLUDED'
+                        
+                # 3. Kilitli Hedefler (Locked Criteria) Kontrolü
+                if not fail_reason:
+                    cur.execute("""
+                        SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs 
+                        WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED')
+                        GROUP BY Action_ID
+                    """, (mid,))
+                    counts = dict(cur.fetchall())
+                    
+                    for req_action, req_target in MEGA_TARGETS.items():
+                        if counts.get(req_action, 0) < req_target:
+                            fail_reason = 'MEGA_COUNTS_FAILED'
+                            break
+                            
+                # Sonuç Ataması
+                if fail_reason:
+                    mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
+                else:
+                    mega_winners.append({'Master_ID': mid, 'Reason_Code': 'MEGA_APPROVED'})
+                    
+            conn.close()
+            
+            st.success("Mega Cycle 1 Değerlendirmesi Tamamlandı!")
+            if mega_winners:
+                st.markdown("#### 🎉 MEGA WINNERS (6-Month Champions)")
+                st.dataframe(pd.DataFrame(mega_winners), use_container_width=True)
+            
+            if mega_failed:
+                st.markdown("#### ❌ MEGA DISQUALIFIED")
+                st.dataframe(pd.DataFrame(mega_failed), use_container_width=True)
 
 with tab5:
     st.header("System Logs")
