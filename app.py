@@ -14,6 +14,10 @@ if 'rollover_mode' not in st.session_state:
 if 'current_simulation_month' not in st.session_state:
     st.session_state.current_simulation_month = 1 
 
+# FİNANS ONAY ZİNCİRİ İÇİN HAFIZA (STATE MACHINE)
+if 'cycle_status' not in st.session_state:
+    st.session_state.cycle_status = "DRAFT"
+
 # --- UNIVERSAL ACTION REGISTRY ---
 UNIVERSAL_ACTION_REGISTRY = [
     ("Worker", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
@@ -164,11 +168,11 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     cursor.execute(query_cooldown, tuple(params_cd))
     if cursor.fetchone()[0] > 0:
         conn.close()
-        return 'BLOCKED (Cooldown)', 0, "Eylem Reddedildi (Zaman/Çift Kayıt limitlerine takıldı)."
+        return 'BLOCKED (Cooldown)', 0, "Eylem Reddedildi (Zaman veya Çift Kayıt limitlerine takıldı)."
 
     cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'SETTLED', 'DISPUTED', 'CAPPED')", (master_id, action_id, current_month_str))
     if cursor.fetchone()[0] >= monthly_cap:
-        status, points, msg_string = 'CAPPED', 0, f"Aylık kota ({monthly_cap}) doldu. Eylem (0 puan) ile işlendi."
+        status, points, msg_string = 'CAPPED', 0, f"Aylık kota ({monthly_cap}) doldu. Eylem sisteme (0 puan) ile işlendi."
     else:
         status, points, msg_string = 'VALIDATING', base_points, f"⏳ Eylem alındı. {base_points} puan 'VALIDATING' statüsünde bekliyor."
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
@@ -177,7 +181,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     
     if action_id == 'DEMAND_CREATED' and acting_role == 'Champion' and target_id:
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'CHAMPION_NUDGE', now + datetime.timedelta(days=7)))
-        msg_string += " 🔗 (Zincir Başladı: 7 günlük takip aktifleştirildi.)"
+        msg_string += " 🔗 (Zincir Başladı: Hedefe 7 günlük takip aktifleştirildi.)"
 
     if action_id in ['FULFILLMENT', 'DELIVERY'] and status != 'CAPPED':
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
@@ -266,16 +270,17 @@ with tab3:
         roles = [u_info['Primary_Role']] + ([r.strip() for r in u_info['Secondary_Roles'].split(',')] if u_info['Secondary_Roles'] else [])
         a_role = st.radio("Active Role:", roles, horizontal=True)
         acts = pd.read_sql_query(f"SELECT Action_ID FROM Action_Registry WHERE Role='{a_role}'", sqlite3.connect(DB_FILE))['Action_ID'].tolist()
-        act = st.selectbox("Action:", acts)
-        t_id = st.text_input("Target ID (Optional - Nudge/Chain için):")
+        act = st.selectbox("Action Type:", acts)
+        t_id = st.text_input("Target ID (Optional - Nudge/Chain senaryoları için):")
+        
         if st.button("Execute Action"):
-            status, earned, msg = execute_action(u_id, a_role, act, t_id)
+            status, earned, msg = execute_action(u_id, a_role, act, t_id if t_id else None)
             if status == 'VALIDATING': st.warning(msg) 
             elif status == 'CAPPED': st.info(msg) 
             else: st.error(status)
             
         st.markdown("---")
-        st.caption("Aylık minimum limitleri aşmak için Worker test verisi")
+        st.caption("Aylık minimum limitleri aşmak için Worker test verisi pompalama")
         if st.button("Simulate 30/30/15 Minimums for Top 5 Workers"):
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
@@ -485,17 +490,34 @@ with tab5:
     st.markdown("---")
     st.subheader("Approval Workflow")
     col_state1, col_state2 = st.columns([1,3])
-    with col_state1: current_state = st.radio("Cycle Status", ["DRAFT", "SIMULATED", "SUBMITTED", "FINANCE_APPROVED", "FINAL_APPROVED", "RELEASED"])
+    with col_state1: 
+        st.info(f"**Current Status:** \n### {st.session_state.cycle_status}")
     with col_state2:
-        if current_state == "DRAFT": st.button("Lock Snapshot & Move to SIMULATED")
-        elif current_state == "SUBMITTED": st.button("Grant FINANCE_APPROVED")
-        elif current_state == "FINAL_APPROVED":
-            if st.button("🚀 RELEASE REWARDS", type="primary"): st.balloons(); st.success("Ödüller dağıtıldı!")
+        if st.session_state.cycle_status == "DRAFT": 
+            if st.button("Lock Snapshot & Move to SIMULATED"): st.session_state.cycle_status = "SIMULATED"; st.rerun()
+        elif st.session_state.cycle_status == "SIMULATED": 
+            if st.button("Submit to Finance (SUBMITTED)"): st.session_state.cycle_status = "SUBMITTED"; st.rerun()
+        elif st.session_state.cycle_status == "SUBMITTED": 
+            if st.button("Grant FINANCE_APPROVED"): st.session_state.cycle_status = "FINANCE_APPROVED"; st.rerun()
+        elif st.session_state.cycle_status == "FINANCE_APPROVED": 
+            if st.button("Grant FINAL_APPROVED"): st.session_state.cycle_status = "FINAL_APPROVED"; st.rerun()
+        elif st.session_state.cycle_status == "FINAL_APPROVED":
+            if st.button("🚀 RELEASE REWARDS", type="primary"): 
+                st.session_state.cycle_status = "RELEASED"
+                conn = sqlite3.connect(DB_FILE)
+                # Olay Loguna ödüllerin dağıtıldığını ekliyoruz ki ekranda görünsün
+                conn.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES ('SYSTEM', 'Admin', 'REWARDS_RELEASED', ?, 'SETTLED', 0, 'CYCLE_CLOSED')", (datetime.datetime.now(),))
+                conn.commit()
+                conn.close()
+                st.balloons()
+                st.success("Ödüller dağıtıldı ve muhasebe kayıtlarına 'Reconciled' olarak işlendi!")
+                st.rerun()
+        elif st.session_state.cycle_status == "RELEASED":
+            st.success("Bu ayın bütçesi başarıyla dağıtıldı ve döngü kapandı.")
+            if st.button("Reset Cycle (Yeni Ay)"): st.session_state.cycle_status = "DRAFT"; st.rerun()
 
-# GÜNCELLENEN LOG SEKMESİ (TAB 6)
 with tab6:
     st.header("System Logs")
-    # Log menüsü ve tablo seçimi düzeltildi
     log_type = st.radio("Select Log Type:", ["Reward Ledgers (Cüzdanlar)", "Event Stream", "Marketplace Attributions (Zincirler)", "Monthly Winners History"])
     
     if log_type == "Event Stream":
