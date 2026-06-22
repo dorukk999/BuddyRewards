@@ -363,13 +363,44 @@ with tab4:
             qualified_pool, disqualified_pool = [], []
             for _, u in users_df.iterrows():
                 mid, role = u['Master_ID'], u['Primary_Role']
+                
+                # --- RULE FIX 2: RESET ROLLOVER IF DISQUALIFIED ---
                 if u['Integrity_Score'] < 80 or u['Action_Status'] == 'Block':
-                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'}); continue
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
+                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
+                    continue
+                
+                # --- RULE FIX 1: ROLE-SPECIFIC MANDATORY GATES ---
+                is_qualified = True
                 if role == 'Worker':
                     cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
                     counts = dict(cur.fetchall())
                     if counts.get('WORKER_VIDEO_WATCH',0)<30 or counts.get('WORKER_QUIZ_ATTEMPT',0)<30 or counts.get('WORKER_REFERRAL',0)<15:
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_MIN_FAILED'}); continue
+                        is_qualified = False
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_MIN_FAILED'})
+                
+                elif role == 'Contractor':
+                    cur.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') AND Action_ID = 'POST_REQ'", (mid,))
+                    if cur.fetchone()[0] < 1:
+                        is_qualified = False
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (No Valid Requirement)'})
+                
+                elif role == 'Supplier':
+                    cur.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') AND Action_ID IN ('PROFILE', 'QUOTE')", (mid,))
+                    if cur.fetchone()[0] < 1:
+                        is_qualified = False
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (No Profile/Quote)'})
+                
+                elif role == 'Transporter':
+                    cur.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') AND Action_ID IN ('RETURN_TRIP', 'DELIVERY')", (mid,))
+                    if cur.fetchone()[0] < 1:
+                        is_qualified = False
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (No Valid Trip)'})
+
+                if not is_qualified:
+                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
+                    continue
+
                 qualified_pool.append({'Master_ID': mid, 'Nationality': u['Nationality'], 'Camp': u['Labor_Cluster'], 'Final_Score': u['Base_Score'] + u['Rollover_Bonus']})
                 
             qualified_pool.sort(key=lambda x: x['Final_Score'], reverse=True)
@@ -393,7 +424,10 @@ with tab4:
                 else: cand['Reason_Code'] = 'WINNER_CAP_FULL'; rollovers.append(cand)
                     
             if st.session_state.rollover_mode:
-                for r in rollovers: cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = Rollover_Bonus + 5 WHERE Master_ID = ?", (r['Master_ID'],))
+                for r in rollovers: 
+                    # --- RULE FIX 2: ROLLOVER CAP (+15 MAXIMUM) ---
+                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = CASE WHEN Rollover_Bonus + 5 > 15 THEN 15 ELSE Rollover_Bonus + 5 END WHERE Master_ID = ?", (r['Master_ID'],))
+            
             conn.commit()
             conn.close()
             st.session_state.current_simulation_month += 1
@@ -422,7 +456,7 @@ with tab4:
             cur = conn.cursor()
             workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users WHERE Primary_Role='Worker'", conn)
             mega_winners, mega_failed = [], []
-            req_months = 2 if m_grace else 3 
+            req_months = 5 if m_grace else 6 # Simplified check for 6 month cycle
             
             for _, w in workers.iterrows():
                 mid, fail_reason = w['Master_ID'], None
@@ -447,7 +481,7 @@ with tab4:
                 if fail_reason: mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
                 else: mega_winners.append({'Master_ID': mid, 'Reason_Code': 'MEGA_APPROVED'})
             conn.close()
-            st.success("Mega Cycle 1 Evaluation Completed!")
+            st.success("Mega Cycle Evaluation Completed!")
             if mega_winners: st.dataframe(pd.DataFrame(mega_winners), use_container_width=True)
             if mega_failed: st.dataframe(pd.DataFrame(mega_failed), use_container_width=True)
 
@@ -464,6 +498,7 @@ with tab5:
     with f_col2:
         st.subheader("Admin Guardrails")
         budget_ceil = st.number_input("Budget Ceiling (Max Limit)", value=40000)
+        policy_limit = st.number_input("Policy Reward Limit (AED)", value=35000) # --- RULE FIX 3: POLICY LIMIT ADDED ---
         profit_margin = st.slider("Required Profit Margin (%)", 10, 50, 20)
         fixed_floor = st.number_input("Fixed Profit Floor (AED)", value=15000)
         mega_prov = st.number_input("Mega Rewards Provision (AED)", value=5000)
@@ -472,7 +507,9 @@ with tab5:
     net_contribution = net_revenue - var_costs
     req_profit = max(fixed_floor, (profit_margin / 100) * net_revenue)
     max_affordable = max(0, net_contribution - mega_prov - req_profit)
-    approved_pool = min(budget_ceil, max_affordable)
+    
+    # --- RULE FIX 3: APPROVED POOL CALCULATION FIXED ---
+    approved_pool = min(budget_ceil, max_affordable, policy_limit)
     
     with f_col3:
         st.subheader("Calculated Pools")
