@@ -54,6 +54,12 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12              
 }
 
+# Kural Kitabı Sebep Kodları
+REASON_CODES = [
+    "APPROVED_CLEAN", "POD_INVALID", "ACTOR_FAULT", "DISPUTE_UPHELD", 
+    "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED"
+]
+
 # --- DATABASE INITIALIZATION ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -69,10 +75,10 @@ def init_db():
         Action_ID TEXT PRIMARY KEY, Role TEXT, Category TEXT, Base_Points INTEGER, Cooldown INTEGER, 
         Integrity_Impact INTEGER, Mega_Eligible BOOLEAN, Monthly_Cap INTEGER)''')
         
-    # Event_Stream_Logs tablosuna Acting_Role sütunu eklendi
+    # YENİLİK 1: Reason_Code sütunu eklendi
     cursor.execute('''CREATE TABLE IF NOT EXISTS Event_Stream_Logs (
         Event_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Acting_Role TEXT, Target_ID TEXT, Action_ID TEXT, 
-        Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER)''')
+        Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER, Reason_Code TEXT DEFAULT '')''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Integrity_Profiles (
         Master_ID TEXT PRIMARY KEY, Integrity_Score INTEGER DEFAULT 100, Action_Status TEXT DEFAULT 'Normal')''')
@@ -129,7 +135,6 @@ init_db()
 # --- CORE ENGINE FUNCTIONS ---
 
 def execute_action(master_id, acting_role, action_id, target_id=None):
-    """YENİLİK 1: Eylemler artık anında SETTLED olmuyor, VALIDATING statüsünde beklemeye alınıyor."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     now = datetime.datetime.now()
@@ -157,7 +162,6 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         points = 0
         msg_string = "Eylem Reddedildi (Cooldown limitlerine takıldı)."
     else:
-        # Puanlar artık geçici (Provisional) statüde başlıyor
         status = 'VALIDATING'
         points = base_points
         
@@ -169,14 +173,14 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         
         msg_string = f"⏳ Eylem alındı. {points} puan {acting_role} cüzdanında 'VALIDATING' statüsünde bekliyor."
 
-    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                   (master_id, acting_role, target_id, action_id, now, status, points))
+    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                   (master_id, acting_role, target_id, action_id, now, status, points, ""))
     conn.commit()
     conn.close()
     return status, points, msg_string
 
-def resolve_event(event_id, resolution_action):
-    """YENİLİK 2: Durum Makinesi Çözümleyici (Approve, Reverse, Dispute)"""
+def resolve_event(event_id, resolution_action, reason_code=""):
+    """YENİLİK 2: Fonksiyon artık loglamak üzere bir Reason Code kabul ediyor"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
@@ -191,11 +195,10 @@ def resolve_event(event_id, resolution_action):
     
     if resolution_action == 'SETTLE':
         new_status = 'SETTLED'
-        # Bekleyen puandan düş, Kesinleşen puana ekle
+        reason_code = reason_code if reason_code else "APPROVED_CLEAN"
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Settled_Points = Settled_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", 
                        (points, points, master_id, acting_role))
         
-        # Kesinleşme anında Integrity Impact uygula
         cursor.execute("SELECT Integrity_Impact FROM Action_Registry WHERE Action_ID = ?", (action_id,))
         impact = cursor.fetchone()[0]
         if impact != 0:
@@ -207,18 +210,17 @@ def resolve_event(event_id, resolution_action):
             
     elif resolution_action == 'REVERSE':
         new_status = 'REVERSED'
-        # Bekleyen puandan düş, İptal edilen puana ekle
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", 
                        (points, points, master_id, acting_role))
                        
     elif resolution_action == 'DISPUTE':
         new_status = 'DISPUTED'
-        # Puanlar pending kalır ama statü değişir
+        reason_code = reason_code if reason_code else "DISPUTE_RAISED"
         
-    cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ? WHERE Event_ID = ?", (new_status, event_id))
+    cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ?, Reason_Code = ? WHERE Event_ID = ?", (new_status, reason_code, event_id))
     conn.commit()
     conn.close()
-    return True, f"Event {event_id} başarıyla {new_status} durumuna getirildi."
+    return True, f"Event {event_id} başarıyla {new_status} durumuna getirildi. Sebep: {reason_code}"
 
 def get_normalized_weights(has_sub, has_cert):
     base_weights = {"Marketplace": 30, "Referral": 20, "Habit": 15, "Subscription": 20, "Certification": 15}
@@ -284,34 +286,51 @@ with tab3:
             if st.button("Execute Action"):
                 status, earned, msg = execute_action(user_id, acting_role, act, t_id if t_id else None)
                 if status == 'VALIDATING':
-                    st.warning(msg) # Sarı renkli uyarı
+                    st.warning(msg) 
                 else:
                     st.error(status)
                     
     with col2:
-        # YENİLİK 3: Bekleyen (Provisional) işlemleri onaylama paneli eklendi
-        st.subheader("2. Event Resolution Queue")
-        st.caption("Puanların kesinleşmesi için doğrulama penceresi (Admin/Sistem simülasyonu)")
+        st.subheader("2. Admin Resolution Desk")
+        st.caption("Puanların kesinleşmesi veya itirazların karara bağlanması")
         
-        pending_events = pd.read_sql_query("SELECT Event_ID, Master_ID, Acting_Role, Action_ID, Earned_Points, Process_Status FROM Event_Stream_Logs WHERE Process_Status IN ('VALIDATING', 'DISPUTED')", sqlite3.connect(DB_FILE))
+        # YENİLİK 3: Arayüz İkiye Ayrıldı (Validating & Disputed)
+        conn = sqlite3.connect(DB_FILE)
+        pending_validations = pd.read_sql_query("SELECT Event_ID, Master_ID, Action_ID, Earned_Points FROM Event_Stream_Logs WHERE Process_Status = 'VALIDATING'", conn)
+        pending_disputes = pd.read_sql_query("SELECT Event_ID, Master_ID, Action_ID, Earned_Points, Reason_Code FROM Event_Stream_Logs WHERE Process_Status = 'DISPUTED'", conn)
+        conn.close()
         
-        if len(pending_events) > 0:
-            st.dataframe(pending_events, use_container_width=True)
-            
-            p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-            ev_id = p_col1.selectbox("Select Event_ID", pending_events['Event_ID'].tolist())
-            
-            if p_col2.button("✅ Settle"):
-                success, m = resolve_event(ev_id, 'SETTLE')
+        st.markdown("#### ⏳ Normal Doğrulama İşlemleri (Validating)")
+        if len(pending_validations) > 0:
+            v_col1, v_col2, v_col3 = st.columns([2,1,1])
+            v_ev_id = v_col1.selectbox("Select Validating Event", pending_validations['Event_ID'].tolist(), key="v_sel")
+            if v_col2.button("✅ Settle", key="v_set"):
+                success, m = resolve_event(v_ev_id, 'SETTLE')
                 if success: st.success(m); st.rerun()
-            if p_col3.button("⚠️ Dispute"):
-                success, m = resolve_event(ev_id, 'DISPUTE')
+            if v_col3.button("⚠️ Dispute", key="v_dis"):
+                success, m = resolve_event(v_ev_id, 'DISPUTE')
                 if success: st.info(m); st.rerun()
-            if p_col4.button("❌ Reverse"):
-                success, m = resolve_event(ev_id, 'REVERSE')
+        else:
+            st.write("Bekleyen normal işlem yok.")
+            
+        st.markdown("---")
+        
+        st.markdown("#### ⚠️ Yöneticinin Karar Masası (Disputed)")
+        if len(pending_disputes) > 0:
+            st.dataframe(pending_disputes, use_container_width=True)
+            d_col1, d_col2 = st.columns(2)
+            d_ev_id = d_col1.selectbox("Select Disputed Event", pending_disputes['Event_ID'].tolist(), key="d_sel")
+            r_code = d_col2.selectbox("Reason Code", REASON_CODES, key="r_code")
+            
+            dr_col1, dr_col2 = st.columns(2)
+            if dr_col1.button("✅ İtirazı Reddet (Settle)", use_container_width=True):
+                success, m = resolve_event(d_ev_id, 'SETTLE', r_code)
+                if success: st.success(m); st.rerun()
+            if dr_col2.button("❌ İşlemi İptal Et (Reverse)", use_container_width=True):
+                success, m = resolve_event(d_ev_id, 'REVERSE', r_code)
                 if success: st.error(m); st.rerun()
         else:
-            st.success("Kuyrukta bekleyen işlem yok.")
+            st.write("Karar bekleyen bir itiraz bulunmuyor.")
 
 with tab4:
     st.header("Reward Qualification and Fairness Engine")
