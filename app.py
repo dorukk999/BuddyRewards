@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 import datetime
 import random
+import os
 
 # --- PAGE SETTINGS ---
 st.set_page_config(page_title="Buddy Rewards - Ultimate Engine", layout="wide")
@@ -248,6 +249,17 @@ with tab1:
         st.subheader("Global Engine Settings")
         st.session_state.rollover_mode = st.toggle("ROLLOVER_MODE", st.session_state.rollover_mode)
         st.metric("Current Simulation Month", st.session_state.current_simulation_month)
+        
+        st.markdown("---")
+        st.subheader("System Reset")
+        st.caption("Wipe the database to restart simulations and clear existing cooldowns/caps.")
+        if st.button("🗑️ Reset / Wipe Database", type="primary", use_container_width=True):
+            if os.path.exists(DB_FILE):
+                os.remove(DB_FILE)
+            st.session_state.current_simulation_month = 1
+            st.session_state.cycle_status = "DRAFT"
+            init_db()
+            st.rerun()
 
 with tab2:
     st.header("Ecosystem Actors & Security")
