@@ -35,8 +35,19 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Transporter", "MULTI_PICKUP", "Propagation", 20, 60, +5, False, 30),
     ("Transporter", "DELIVERY", "Completion", 40, 0, +10, False, 50),
     
+  # Mevcut Captain aksiyonları
     ("Captain", "VERIFY_SIGNUP", "Growth", 2, 0, +2, False, 100),
     ("Captain", "ACTIVE_CLUSTER", "Trust", 25, 1440, +10, False, 5),
+    
+    # EKSİK OLAN YENİ CAPTAIN AKSİYONLARI
+    ("Captain", "USER_ACTIVE", "Retention", 10, 0, +2, False, 100),
+    ("Captain", "WORKER_RETAINED", "Retention", 15, 0, +5, False, 100),
+    ("Captain", "HIGH_RETENTION_CLUSTER", "Trust", 40, 1440, +15, False, 1),
+    ("Captain", "DAILY_TASK_ACTIVATION", "Retention", 5, 0, +1, False, 20),
+    ("Captain", "SESSION_COMPLETED", "Community", 20, 1440, +5, False, 4),
+    ("Captain", "INACTIVE_REACTIVATED", "Retention", 10, 0, +3, False, 20),
+    ("Captain", "REFERRAL_RETAINED", "Growth", 15, 0, +4, False, 20),
+    ("Captain", "CAMP_CHALLENGE", "Community", 25, 1440, +5, False, 4),
     
     ("Champion", "DEMAND_CREATED", "Trigger", 20, 60, +5, False, 50),
     ("Champion", "CLOSURE", "Completion", 50, 0, +20, False, 50)
