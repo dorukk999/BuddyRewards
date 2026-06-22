@@ -1,8 +1,3 @@
-İstediğin gibi kodun genel iskeletine, adalet motoruna ve diğer işlevlere dokunmadan; sadece **Aktör/Cüzdan ayrımı (Ledger)** veritabanı altyapısını ve **Aksiyon Sekmesindeki (Tab 3) Rol Seçim** arayüzünü entegre ettim. Mevcut sorguların (Tab 2 ve Tab 4) hata vermemesi için `Role` sütun isimleri `Primary_Role` olarak güncellendi.
-
-Aşağıdaki kodu doğrudan kopyalayıp çalıştırabilirsin (Temiz bir kurulum için uygulamanı çalıştırmadan önce eski `buddy_rewards_v4.db` dosyanı silmeyi unutma):
-
-```python
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -410,5 +405,3 @@ with tab5:
     else:
         # YENİLİK 8: Ledger cüzdanlarının incelenebilmesi için tablo Loglar sekmesine eklendi
         st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Ledgers", sqlite3.connect(DB_FILE)), use_container_width=True)
-
-```
