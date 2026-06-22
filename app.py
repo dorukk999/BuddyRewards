@@ -55,7 +55,7 @@ UNIVERSAL_ACTION_REGISTRY = [
 
 MEGA_TARGETS = {
     'WORKER_VIDEO_WATCH': 180, 'WORKER_QUIZ_ATTEMPT': 180, 'WORKER_REFERRAL': 150,
-    'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12              
+    'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12               
 }
 
 REASON_CODES = [
@@ -470,22 +470,35 @@ with tab5:
         st.metric("FINAL APPROVED POOL", f"AED {approved_pool:,.2f}")
         
     st.markdown("---")
-    st.subheader("Distribution Scenarios")
+    st.subheader("Distribution Strategies (Select One)")
     t1_cost, t2_cost, t3_cost = 5, 20, 50 
+    
     scenarios = {
         "Conservative (Kâr Odaklı)": {"T1": 0.10, "T2": 0.30, "T3": 0.60},
         "Balanced (Dengeli)": {"T1": 0.30, "T2": 0.40, "T3": 0.30},
         "Growth (Tabana Yayılma)": {"T1": 0.60, "T2": 0.30, "T3": 0.10} 
     }
     
-    s_data = []
-    for s_name, alloc in scenarios.items():
-        t1_b, t2_b, t3_b = approved_pool * alloc["T1"], approved_pool * alloc["T2"], approved_pool * alloc["T3"]
-        s_data.append({
-            "Strategy": s_name, "Total Winners Funded": int((t1_b/t1_cost) + (t2_b/t2_cost) + (t3_b/t3_cost)), 
-            "Tier 1 (5 AED)": int(t1_b/t1_cost), "Tier 2 (20 AED)": int(t2_b/t2_cost), "Tier 3 (50 AED)": int(t3_b/t3_cost)
-        })
-    st.dataframe(pd.DataFrame(s_data), use_container_width=True)
+    # Kullanıcı seçimi
+    selected_strat = st.radio("Choose Distribution Strategy:", list(scenarios.keys()), horizontal=True)
+    alloc = scenarios[selected_strat]
+    
+    # Hesaplama
+    t1_b = approved_pool * alloc["T1"]
+    t2_b = approved_pool * alloc["T2"]
+    t3_b = approved_pool * alloc["T3"]
+    
+    t1_count = int(t1_b / t1_cost)
+    t2_count = int(t2_b / t2_cost)
+    t3_count = int(t3_b / t3_cost)
+    
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Strategy", selected_strat)
+    c2.metric("Tier 1 Capacity", f"{t1_count} users")
+    c3.metric("Tier 2 Capacity", f"{t2_count} users")
+    c4.metric("Tier 3 Capacity", f"{t3_count} users")
+    
+    st.info(f"Seçilen senaryo ({selected_strat}) üzerinden toplam {t1_count + t2_count + t3_count} kullanıcı ödüllendirilebilir.")
     
     st.markdown("---")
     st.subheader("Approval Workflow")
@@ -505,7 +518,6 @@ with tab5:
             if st.button("🚀 RELEASE REWARDS", type="primary"): 
                 st.session_state.cycle_status = "RELEASED"
                 conn = sqlite3.connect(DB_FILE)
-                # Olay Loguna ödüllerin dağıtıldığını ekliyoruz ki ekranda görünsün
                 conn.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES ('SYSTEM', 'Admin', 'REWARDS_RELEASED', ?, 'SETTLED', 0, 'CYCLE_CLOSED')", (datetime.datetime.now(),))
                 conn.commit()
                 conn.close()
