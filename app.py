@@ -15,6 +15,7 @@ if 'current_simulation_month' not in st.session_state:
     st.session_state.current_simulation_month = 1 
 
 # --- UNIVERSAL ACTION REGISTRY ---
+# Sütunlar: Role, Action_ID, Category, Base_Points, Cooldown(min), Integrity_Impact, Mega_Eligible, Monthly_Cap
 UNIVERSAL_ACTION_REGISTRY = [
     ("Worker", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
     ("Worker", "WORKER_QUIZ_ATTEMPT", "Retention", 5, 1440, 0, True, 30),
@@ -54,7 +55,6 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12              
 }
 
-# Kural Kitabı Sebep Kodları
 REASON_CODES = [
     "APPROVED_CLEAN", "POD_INVALID", "ACTOR_FAULT", "DISPUTE_UPHELD", 
     "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED"
@@ -75,7 +75,6 @@ def init_db():
         Action_ID TEXT PRIMARY KEY, Role TEXT, Category TEXT, Base_Points INTEGER, Cooldown INTEGER, 
         Integrity_Impact INTEGER, Mega_Eligible BOOLEAN, Monthly_Cap INTEGER)''')
         
-    # YENİLİK 1: Reason_Code sütunu eklendi
     cursor.execute('''CREATE TABLE IF NOT EXISTS Event_Stream_Logs (
         Event_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Acting_Role TEXT, Target_ID TEXT, Action_ID TEXT, 
         Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER, Reason_Code TEXT DEFAULT '')''')
@@ -92,6 +91,14 @@ def init_db():
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Past_Winners (
         Win_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Win_Month INTEGER)''')
+
+    # YENİLİK 1: Zincir Atıf Tablosu (Event-Chain Attribution)
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Marketplace_Attributions (
+        Attribution_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Source_ID TEXT,
+        Target_ID TEXT,
+        Attribution_Type TEXT,
+        Expiry_Date DATETIME)''')
 
     cursor.execute("SELECT COUNT(*) FROM Global_Users")
     if cursor.fetchone()[0] == 0:
@@ -138,29 +145,44 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     now = datetime.datetime.now()
+    current_month_str = now.strftime('%Y-%m')
     
-    cursor.execute("SELECT Base_Points, Cooldown FROM Action_Registry WHERE Action_ID = ?", (action_id,))
+    # YENİLİK 2: Base_Points ve Cooldown'un yanında Monthly_Cap değerini de çekiyoruz
+    cursor.execute("SELECT Base_Points, Cooldown, Monthly_Cap FROM Action_Registry WHERE Action_ID = ?", (action_id,))
     act_meta = cursor.fetchone()
     if not act_meta: return 'Failed', 0, ""
-    base_points, cooldown = act_meta
+    base_points, cooldown, monthly_cap = act_meta
     
-    query = """
+    # KONTROL 1: Cooldown Kısıtı (Zaman/Spam Kontrolü)
+    query_cooldown = """
         SELECT COUNT(*) FROM Event_Stream_Logs 
-        WHERE Master_ID = ? AND Action_ID = ? AND Process_Status IN ('VALIDATING', 'SETTLED', 'DISPUTED')
+        WHERE Master_ID = ? AND Action_ID = ? AND Process_Status IN ('VALIDATING', 'SETTLED', 'DISPUTED', 'CAPPED')
         AND Event_Timestamp >= datetime(?, '-' || ? || ' minutes')
     """
-    params = [master_id, action_id, now, cooldown]
+    params_cd = [master_id, action_id, now, cooldown]
     if target_id:
-        query += " AND Target_ID = ?"
-        params.append(target_id)
+        query_cooldown += " AND Target_ID = ?"
+        params_cd.append(target_id)
         
-    cursor.execute(query, tuple(params))
+    cursor.execute(query_cooldown, tuple(params_cd))
     recent_actions = cursor.fetchone()[0]
     
     if recent_actions > 0:
-        status = 'BLOCKED (Cooldown)'
+        conn.close()
+        return 'BLOCKED (Cooldown)', 0, "Eylem Reddedildi (Zaman veya Çift Kayıt limitlerine takıldı)."
+
+    # YENİLİK 3: Aylık Kota Kontrolü (Raw vs Rewarded)
+    cursor.execute("""
+        SELECT COUNT(*) FROM Event_Stream_Logs 
+        WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ?
+        AND Process_Status IN ('VALIDATING', 'SETTLED', 'DISPUTED', 'CAPPED')
+    """, (master_id, action_id, current_month_str))
+    monthly_count = cursor.fetchone()[0]
+    
+    if monthly_count >= monthly_cap:
+        status = 'CAPPED'
         points = 0
-        msg_string = "Eylem Reddedildi (Cooldown limitlerine takıldı)."
+        msg_string = f"Aylık kota ({monthly_cap}) doldu. Eylem sisteme (0 puan) ile işlendi."
     else:
         status = 'VALIDATING'
         points = base_points
@@ -173,14 +195,49 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         
         msg_string = f"⏳ Eylem alındı. {points} puan {acting_role} cüzdanında 'VALIDATING' statüsünde bekliyor."
 
+    # Eylemi loga yaz
     cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
                    (master_id, acting_role, target_id, action_id, now, status, points, ""))
+    
+    # ---------------------------------------------------------
+    # YENİLİK 4: OLAY ZİNCİRİ (EVENT-CHAIN CASCADE LOGIC)
+    # ---------------------------------------------------------
+    
+    # ZİNCİR BAŞLATICI: Champion bir talep açarsa (DEMAND_CREATED) ve bir hedefi dürtüklediyse
+    if action_id == 'DEMAND_CREATED' and acting_role == 'Champion' and target_id:
+        expiry = now + datetime.timedelta(days=7) # 7 günlük atıf penceresi
+        cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", 
+                       (master_id, target_id, 'CHAMPION_NUDGE', expiry))
+        msg_string += f" 🔗 (Zincir Başladı: {target_id} hedefine 7 günlük takip aktifleştirildi.)"
+
+    # ZİNCİR TAMAMLAYICI: Bir işlem başarıyla sonlanırsa (FULFILLMENT veya DELIVERY), arkasında süresi dolmamış bir Champion var mı bak.
+    if action_id in ['FULFILLMENT', 'DELIVERY'] and status != 'CAPPED':
+        cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
+        attributions = cursor.fetchall()
+        
+        for attr in attributions:
+            champion_id = attr[0]
+            # Champion'a verilecek CLOSURE puanını Action_Registry'den çek
+            cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'CLOSURE'")
+            closure_pts = cursor.fetchone()
+            if closure_pts:
+                c_pts = closure_pts[0]
+                # Champion'un cüzdanına otomatik bekleyen puan ekle
+                cursor.execute("""
+                    UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? 
+                    WHERE Master_ID = ? AND Role_Ledger = 'Champion'
+                """, (c_pts, champion_id))
+                
+                # Champion için otomatik log girdisi oluştur
+                cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", 
+                               (champion_id, 'Champion', master_id, 'CLOSURE', now, 'VALIDATING', c_pts, "CHAIN_ATTRIBUTION"))
+                msg_string += f" 🏆 (Zincir Tamamlandı: {champion_id} kullanıcısına otomatik +{c_pts} CLOSURE puanı atfedildi!)"
+
     conn.commit()
     conn.close()
     return status, points, msg_string
 
 def resolve_event(event_id, resolution_action, reason_code=""):
-    """YENİLİK 2: Fonksiyon artık loglamak üzere bir Reason Code kabul ediyor"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
@@ -281,12 +338,14 @@ with tab3:
         
         if len(available_actions) > 0:
             act = st.selectbox("Action Type:", available_actions)
-            t_id = st.text_input("Target User ID (Optional):", placeholder="e.g. ID-5")
+            t_id = st.text_input("Target User ID (Optional - Nudge/Chain senaryoları için):", placeholder="e.g. ID-12")
             
             if st.button("Execute Action"):
                 status, earned, msg = execute_action(user_id, acting_role, act, t_id if t_id else None)
                 if status == 'VALIDATING':
                     st.warning(msg) 
+                elif status == 'CAPPED':
+                    st.info(msg) # Capped durumu için info rengi
                 else:
                     st.error(status)
                     
@@ -294,7 +353,6 @@ with tab3:
         st.subheader("2. Admin Resolution Desk")
         st.caption("Puanların kesinleşmesi veya itirazların karara bağlanması")
         
-        # YENİLİK 3: Arayüz İkiye Ayrıldı (Validating & Disputed)
         conn = sqlite3.connect(DB_FILE)
         pending_validations = pd.read_sql_query("SELECT Event_ID, Master_ID, Action_ID, Earned_Points FROM Event_Stream_Logs WHERE Process_Status = 'VALIDATING'", conn)
         pending_disputes = pd.read_sql_query("SELECT Event_ID, Master_ID, Action_ID, Earned_Points, Reason_Code FROM Event_Stream_Logs WHERE Process_Status = 'DISPUTED'", conn)
@@ -338,8 +396,10 @@ with tab4:
 
 with tab5:
     st.header("System Logs")
-    log_type = st.radio("Select Log Type:", ["Reward Ledgers (Cüzdanlar)", "Event Stream"])
+    log_type = st.radio("Select Log Type:", ["Reward Ledgers (Cüzdanlar)", "Event Stream", "Marketplace Attributions (Zincirler)"])
     if log_type == "Event Stream":
         st.dataframe(pd.read_sql_query("SELECT * FROM Event_Stream_Logs ORDER BY Event_ID DESC LIMIT 50", sqlite3.connect(DB_FILE)), use_container_width=True)
-    else:
+    elif log_type == "Reward Ledgers (Cüzdanlar)":
         st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Ledgers", sqlite3.connect(DB_FILE)), use_container_width=True)
+    else:
+        st.dataframe(pd.read_sql_query("SELECT * FROM Marketplace_Attributions", sqlite3.connect(DB_FILE)), use_container_width=True)
