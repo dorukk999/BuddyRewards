@@ -168,20 +168,20 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     cursor.execute(query_cooldown, tuple(params_cd))
     if cursor.fetchone()[0] > 0:
         conn.close()
-        return 'BLOCKED (Cooldown)', 0, "Eylem Reddedildi (Zaman veya Çift Kayıt limitlerine takıldı)."
+        return 'BLOCKED (Cooldown)', 0, "Action Rejected (Blocked by cooldown or duplicate record limits)."
 
     cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'SETTLED', 'DISPUTED', 'CAPPED')", (master_id, action_id, current_month_str))
     if cursor.fetchone()[0] >= monthly_cap:
-        status, points, msg_string = 'CAPPED', 0, f"Aylık kota ({monthly_cap}) doldu. Eylem sisteme (0 puan) ile işlendi."
+        status, points, msg_string = 'CAPPED', 0, f"Monthly quota ({monthly_cap}) reached. Action processed (0 points)."
     else:
-        status, points, msg_string = 'VALIDATING', base_points, f"⏳ Eylem alındı. {base_points} puan 'VALIDATING' statüsünde bekliyor."
+        status, points, msg_string = 'VALIDATING', base_points, f"⏳ Action received. {base_points} points waiting in 'VALIDATING' status."
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
 
     cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (master_id, acting_role, target_id, action_id, now, status, points, ""))
     
     if action_id == 'DEMAND_CREATED' and acting_role == 'Champion' and target_id:
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'CHAMPION_NUDGE', now + datetime.timedelta(days=7)))
-        msg_string += " 🔗 (Zincir Başladı: Hedefe 7 günlük takip aktifleştirildi.)"
+        msg_string += " 🔗 (Chain Started: 7-day tracking activated for target.)"
 
     if action_id in ['FULFILLMENT', 'DELIVERY'] and status != 'CAPPED':
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
@@ -190,7 +190,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             c_pts = cursor.fetchone()[0]
             cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Champion'", (c_pts, attr[0]))
             cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (attr[0], 'Champion', master_id, 'CLOSURE', now, 'VALIDATING', c_pts, "CHAIN_ATTRIBUTION"))
-            msg_string += f" 🏆 (Zincir Tamamlandı: Champion {attr[0]} kullanıcısına CLOSURE atfedildi!)"
+            msg_string += f" 🏆 (Chain Completed: CLOSURE attributed to Champion {attr[0]}!)"
 
     conn.commit()
     conn.close()
@@ -201,7 +201,7 @@ def resolve_event(event_id, resolution_action, reason_code=""):
     cursor = conn.cursor()
     cursor.execute("SELECT Master_ID, Acting_Role, Action_ID, Earned_Points, Process_Status FROM Event_Stream_Logs WHERE Event_ID = ?", (event_id,))
     event = cursor.fetchone()
-    if not event or event[4] not in ['VALIDATING', 'DISPUTED']: return False, "Sadece VALIDATING veya DISPUTED çözümlenebilir."
+    if not event or event[4] not in ['VALIDATING', 'DISPUTED']: return False, "Only VALIDATING or DISPUTED can be resolved."
         
     master_id, acting_role, action_id, points, current_status = event
     
@@ -224,7 +224,7 @@ def resolve_event(event_id, resolution_action, reason_code=""):
     cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ?, Reason_Code = ? WHERE Event_ID = ?", (new_status, reason_code, event_id))
     conn.commit()
     conn.close()
-    return True, f"Event {event_id} {new_status} durumuna getirildi."
+    return True, f"Event {event_id} set to {new_status}."
 
 def get_normalized_weights(has_sub, has_cert):
     base_weights = {"Marketplace": 30, "Referral": 20, "Habit": 15, "Subscription": 20, "Certification": 15}
@@ -271,7 +271,7 @@ with tab3:
         a_role = st.radio("Active Role:", roles, horizontal=True)
         acts = pd.read_sql_query(f"SELECT Action_ID FROM Action_Registry WHERE Role='{a_role}'", sqlite3.connect(DB_FILE))['Action_ID'].tolist()
         act = st.selectbox("Action Type:", acts)
-        t_id = st.text_input("Target ID (Optional - Nudge/Chain senaryoları için):")
+        t_id = st.text_input("Target ID (Optional - For Nudge/Chain scenarios):")
         
         if st.button("Execute Action"):
             status, earned, msg = execute_action(u_id, a_role, act, t_id if t_id else None)
@@ -280,7 +280,7 @@ with tab3:
             else: st.error(status)
             
         st.markdown("---")
-        st.caption("Aylık minimum limitleri aşmak için Worker test verisi pompalama")
+        st.caption("Inject Worker test data to exceed monthly minimums")
         if st.button("Simulate 30/30/15 Minimums for Top 5 Workers"):
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
@@ -307,24 +307,24 @@ with tab3:
         pending_disp = pd.read_sql_query("SELECT Event_ID, Master_ID, Action_ID, Reason_Code FROM Event_Stream_Logs WHERE Process_Status = 'DISPUTED'", conn)
         conn.close()
         
-        st.markdown("#### ⏳ Normal Doğrulama İşlemleri (Validating)")
+        st.markdown("#### ⏳ Standard Validation Operations (Validating)")
         if len(pending_val) > 0:
             v_col1, v_col2, v_col3 = st.columns([2,1,1])
             v_ev_id = v_col1.selectbox("Select Validating Event", pending_val['Event_ID'].tolist(), key="v_sel")
             if v_col2.button("✅ Settle", key="v_set"): resolve_event(v_ev_id, 'SETTLE'); st.rerun()
             if v_col3.button("⚠️ Dispute", key="v_dis"): resolve_event(v_ev_id, 'DISPUTE'); st.rerun()
-        else: st.write("Bekleyen normal işlem yok.")
+        else: st.write("No pending standard operations.")
             
         st.markdown("---")
-        st.markdown("#### ⚠️ Yöneticinin Karar Masası (Disputed)")
+        st.markdown("#### ⚠️ Admin Decision Desk (Disputed)")
         if len(pending_disp) > 0:
             d_col1, d_col2 = st.columns(2)
             d_ev_id = d_col1.selectbox("Select Disputed Event", pending_disp['Event_ID'].tolist(), key="d_sel")
             r_code = d_col2.selectbox("Reason Code", REASON_CODES, key="r_code")
             dr_col1, dr_col2 = st.columns(2)
-            if dr_col1.button("✅ İtirazı Reddet (Settle)", use_container_width=True): resolve_event(d_ev_id, 'SETTLE', r_code); st.rerun()
-            if dr_col2.button("❌ İşlemi İptal Et (Reverse)", use_container_width=True): resolve_event(d_ev_id, 'REVERSE', r_code); st.rerun()
-        else: st.write("Karar bekleyen bir itiraz bulunmuyor.")
+            if dr_col1.button("✅ Reject Dispute (Settle)", use_container_width=True): resolve_event(d_ev_id, 'SETTLE', r_code); st.rerun()
+            if dr_col2.button("❌ Cancel Event (Reverse)", use_container_width=True): resolve_event(d_ev_id, 'REVERSE', r_code); st.rerun()
+        else: st.write("No disputes awaiting decision.")
 
 with tab4:
     st.header("Reward Qualification and Fairness Engine")
@@ -403,7 +403,7 @@ with tab4:
             cur.execute("UPDATE Integrity_Profiles SET Integrity_Score=100, Action_Status='Normal' WHERE Master_ID='ID-1'")
             conn.commit()
             conn.close()
-            st.success("ID-1 için Mega veriler yüklendi!")
+            st.success("Mega data injected for ID-1!")
 
         if st.button("🚀 Run Mega Cycle Evaluation", type="primary"):
             conn = sqlite3.connect(DB_FILE)
@@ -435,7 +435,7 @@ with tab4:
                 if fail_reason: mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
                 else: mega_winners.append({'Master_ID': mid, 'Reason_Code': 'MEGA_APPROVED'})
             conn.close()
-            st.success("Mega Cycle 1 Değerlendirmesi Tamamlandı!")
+            st.success("Mega Cycle 1 Evaluation Completed!")
             if mega_winners: st.dataframe(pd.DataFrame(mega_winners), use_container_width=True)
             if mega_failed: st.dataframe(pd.DataFrame(mega_failed), use_container_width=True)
 
@@ -474,9 +474,9 @@ with tab5:
     t1_cost, t2_cost, t3_cost = 5, 20, 50 
     
     scenarios = {
-        "Conservative (Kâr Odaklı)": {"T1": 0.10, "T2": 0.30, "T3": 0.60},
-        "Balanced (Dengeli)": {"T1": 0.30, "T2": 0.40, "T3": 0.30},
-        "Growth (Tabana Yayılma)": {"T1": 0.60, "T2": 0.30, "T3": 0.10} 
+        "Conservative (Profit-Oriented)": {"T1": 0.10, "T2": 0.30, "T3": 0.60},
+        "Balanced": {"T1": 0.30, "T2": 0.40, "T3": 0.30},
+        "Growth (Widespread Adoption)": {"T1": 0.60, "T2": 0.30, "T3": 0.10} 
     }
     
     # Kullanıcı seçimi
@@ -498,7 +498,7 @@ with tab5:
     c3.metric("Tier 2 Capacity", f"{t2_count} users")
     c4.metric("Tier 3 Capacity", f"{t3_count} users")
     
-    st.info(f"Seçilen senaryo ({selected_strat}) üzerinden toplam {t1_count + t2_count + t3_count} kullanıcı ödüllendirilebilir.")
+    st.info(f"Total {t1_count + t2_count + t3_count} users can be rewarded based on the selected scenario ({selected_strat}).")
     
     st.markdown("---")
     st.subheader("Approval Workflow")
@@ -522,21 +522,21 @@ with tab5:
                 conn.commit()
                 conn.close()
                 st.balloons()
-                st.success("Ödüller dağıtıldı ve muhasebe kayıtlarına 'Reconciled' olarak işlendi!")
+                st.success("Rewards distributed and recorded in accounting as 'Reconciled'!")
                 st.rerun()
         elif st.session_state.cycle_status == "RELEASED":
-            st.success("Bu ayın bütçesi başarıyla dağıtıldı ve döngü kapandı.")
-            if st.button("Reset Cycle (Yeni Ay)"): st.session_state.cycle_status = "DRAFT"; st.rerun()
+            st.success("This month's budget successfully distributed and cycle closed.")
+            if st.button("Reset Cycle (New Month)"): st.session_state.cycle_status = "DRAFT"; st.rerun()
 
 with tab6:
     st.header("System Logs")
-    log_type = st.radio("Select Log Type:", ["Reward Ledgers (Cüzdanlar)", "Event Stream", "Marketplace Attributions (Zincirler)", "Monthly Winners History"])
+    log_type = st.radio("Select Log Type:", ["Reward Ledgers (Wallets)", "Event Stream", "Marketplace Attributions (Chains)", "Monthly Winners History"])
     
     if log_type == "Event Stream":
         st.dataframe(pd.read_sql_query("SELECT * FROM Event_Stream_Logs ORDER BY Event_ID DESC LIMIT 50", sqlite3.connect(DB_FILE)), use_container_width=True)
-    elif log_type == "Reward Ledgers (Cüzdanlar)":
+    elif log_type == "Reward Ledgers (Wallets)":
         st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Ledgers", sqlite3.connect(DB_FILE)), use_container_width=True)
-    elif log_type == "Marketplace Attributions (Zincirler)":
+    elif log_type == "Marketplace Attributions (Chains)":
         st.dataframe(pd.read_sql_query("SELECT * FROM Marketplace_Attributions", sqlite3.connect(DB_FILE)), use_container_width=True)
     else:
         st.dataframe(pd.read_sql_query("SELECT * FROM Past_Winners", sqlite3.connect(DB_FILE)), use_container_width=True)
