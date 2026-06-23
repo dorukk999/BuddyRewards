@@ -21,7 +21,6 @@ if 'cycle_status' not in st.session_state:
 
 # --- UNIVERSAL ACTION REGISTRY ---
 UNIVERSAL_ACTION_REGISTRY = [
-    # 2.1 & 2.2 Genel / Ortak Aksiyonlar & Rol Kapsamı Genişletilenler
     ("Worker, Captain, Champion", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
     ("All", "WORKER_QUIZ_ATTEMPT", "Retention", 5, 1440, 0, True, 30),
     ("All", "PASS_QUIZ", "Quality", 2, 1440, 0, False, 30),
@@ -39,7 +38,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     
     ("Worker", "FULFILL_VALIDATED", "Trust", 40, 0, +10, True, 20),
     
-    # 2.3 Contractor Aksiyonları
     ("Contractor", "POST_REQ", "Trigger", 20, 30, 0, False, 10),
     ("Contractor", "CLONE_REQ", "Trigger", 10, 0, 0, False, 5),
     ("Contractor", "RESPOND_FIRST_BID", "Response", 5, 0, 0, False, 50),
@@ -49,7 +47,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Contractor", "RATE_COUNTERPARTY", "Trust", 5, 0, 0, False, 50),
     ("Contractor", "PAY_ON_TIME", "Trust", 15, 0, 0, False, 10),
     
-    # 2.4 Supplier Aksiyonları
     ("Supplier", "PROFILE", "Activation", 20, 129600, +1, False, 1),
     ("Supplier", "UPDATE_CATALOGUE", "Retention", 5, 0, 0, False, 4),
     ("Supplier", "QUOTE", "Response", 10, 60, +2, False, 20),
@@ -60,7 +57,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Supplier", "UPLOAD_POD", "Trust", 5, 0, 0, False, 10),
     ("Supplier", "DISPUTE_FREE_SETTLEMENT", "Trust", 10, 0, 0, False, 10),
     
-    # 2.5 Transporter Aksiyonları
     ("Transporter", "SET_CAPACITY", "Trigger", 5, 720, 0, False, 60),
     ("Transporter", "RETURN_TRIP", "Trigger", 15, 120, +5, False, 20),
     ("Transporter", "ACCEPT_BACKHAUL", "Response", 15, 0, 0, False, 10),
@@ -73,7 +69,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Transporter", "COMPETITIVE_PRICE", "Efficiency", 10, 0, 0, False, 10),
     ("Transporter", "DISPUTE_FREE_TRIP", "Trust", 10, 0, 0, False, 15),
     
-    # 2.6 Champion Aksiyonları
     ("Champion", "DEMAND_CREATED", "Trigger", 20, 60, +5, False, 10),
     ("Champion", "REQ_PROPAGATED", "Propagation", 10, 0, 0, False, 20),
     ("Champion", "SUPPLIER_ACTIVATED", "Activation", 15, 0, 0, False, 10),
@@ -87,7 +82,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Champion", "REACTIVATE_PROVIDER", "Retention", 15, 0, 0, False, 10),
     ("Champion", "IMPROVE_BID_SLA", "Quality", 10, 0, 0, False, 10),
     
-    # 2.7 Captain Aksiyonları
     ("Captain", "VERIFY_SIGNUP", "Growth", 2, 0, +2, False, 999),
     ("Captain", "ACTIVE_CLUSTER", "Trust", 25, 1440, +10, False, 1),
     ("Captain", "USER_ACTIVE", "Retention", 10, 0, +2, False, 999),
@@ -99,7 +93,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Captain", "REFERRAL_RETAINED", "Growth", 15, 0, +4, False, 20),
     ("Captain", "CAMP_CHALLENGE", "Community", 25, 1440, +5, False, 4),
 
-    # --- BÖLÜM 3: NON-REWARDABLE & PENALTY EVENTS ---
     ("All", "NR01_APP_INSTALL", "Trigger", 0, 0, 0, False, 1),
     ("All", "NR02_COSMETIC_PROFILE_EDIT", "Trigger", 0, 0, 0, False, 10),
     ("Transporter", "NR03_FAKE_BACKHAUL", "Trigger", 0, 0, -10, False, 5),
@@ -119,9 +112,14 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12               
 }
 
+# --- REASON CODES GÜNCELLEMESİ (I01-I15 EKLENDİ) ---
 REASON_CODES = [
     "APPROVED_CLEAN", "POD_INVALID", "ACTOR_FAULT", "DISPUTE_UPHELD", 
-    "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED"
+    "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED",
+    "I01_DUPLICATE_IDENTITY", "I02_SELF_REFERRAL", "I03_FAKE_PROVIDER", "I04_FAKE_DEMAND",
+    "I05_PAIR_FARMING", "I06_COLLUSION", "I07_VELOCITY_SPIKE", "I08_FAKE_ONBOARDING",
+    "I09_FAKE_LIQUIDITY", "I10_BACKHAUL_FARMING", "I11_BUNDLE_MANIPULATION", "I12_KYC_MISMATCH",
+    "I13_POD_REUSE", "I14_RATING_MANIPULATION", "I15_ADMIN_ABUSE"
 ]
 
 # --- DATABASE INITIALIZATION ---
@@ -143,7 +141,6 @@ def init_db():
         Event_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Acting_Role TEXT, Target_ID TEXT, Action_ID TEXT, 
         Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER, Reason_Code TEXT DEFAULT '')''')
         
-    # --- BÖLÜM 6: INTEGRITY STATUS BANDS (Critical Flag Eklendi) ---
     cursor.execute('''CREATE TABLE IF NOT EXISTS Integrity_Profiles (
         Master_ID TEXT PRIMARY KEY, Integrity_Score INTEGER DEFAULT 100, Action_Status TEXT DEFAULT 'Normal', Critical_Flag BOOLEAN DEFAULT 0)''')
         
@@ -261,11 +258,52 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         conn.commit(); conn.close()
         return 'SETTLED', 0, msg_string
 
-    # --- BÖLÜM 4: SELF-LOOP & CIRCULAR CHAIN PREVENTION ---
-    if action_id in ['REQ_SHARE_SENT', 'DEMAND_CREATED', 'NUDGE_VALID_BID', 'BUDDY_HELP'] and target_id == master_id:
-        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'SELF_LOOP_DETECTED' WHERE Event_ID = ?", (last_event_id,))
+    # --- BÖLÜM 7: FRAUD/ABUSE PATTERN DETECTION (I01-I15) GERÇEK ZAMANLI MOTOR ---
+    def apply_fraud_penalty(m_id, ev_id, penalty_pts, r_code, set_critical=False):
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = ? WHERE Event_ID = ?", (r_code, ev_id))
+        cursor.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID = ?", (m_id,))
+        s_row = cursor.fetchone()
+        new_score = min(100, max(0, s_row[0] + penalty_pts))
+        is_crit = 1 if set_critical else s_row[1]
+        act_status = 'Block' if is_crit else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
+        cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ?, Critical_Flag = ? WHERE Master_ID = ?", (new_score, act_status, is_crit, m_id))
+
+    # I07 — Last-minute velocity spike
+    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Event_Timestamp >= datetime(?, '-5 minutes')", (master_id, now))
+    if cursor.fetchone()[0] >= 10:
+        apply_fraud_penalty(master_id, last_event_id, -10, 'I07_VELOCITY_SPIKE')
         conn.commit(); conn.close()
-        return 'BLOCKED (Integrity)', 0, "Action Rejected: Self-loop or circular chain detected. You cannot target yourself."
+        return 'BLOCKED (Fraud)', 0, "🚨 I07: Last-minute velocity spike detected. Integrity penalty applied."
+
+    # I02 — Self/circular referral (Directed referral cycle)
+    if target_id == master_id:
+        apply_fraud_penalty(master_id, last_event_id, -20, 'I02_SELF_REFERRAL', set_critical=True)
+        conn.commit(); conn.close()
+        return 'BLOCKED (Fraud)', 0, "🚨 I02: Self/circular interaction detected. Critical Flag applied."
+
+    # I03 — Fake/duplicate provider
+    if action_id in ['SUPPLIER_ADDED', 'TRANSPORTER_ADDED'] and target_id:
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Target_ID = ? AND Action_ID IN ('SUPPLIER_ADDED', 'TRANSPORTER_ADDED') AND Event_ID != ?", (target_id, last_event_id))
+        if cursor.fetchone()[0] > 0:
+            apply_fraud_penalty(master_id, last_event_id, -10, 'I03_FAKE_PROVIDER')
+            conn.commit(); conn.close()
+            return 'BLOCKED (Fraud)', 0, "🚨 I03: Duplicate provider addition detected."
+
+    # I10 — Backhaul toggle farming
+    if action_id == 'RETURN_TRIP':
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = 'RETURN_TRIP' AND Event_Timestamp >= datetime(?, '-1 days') AND Process_Status != 'REVERSED'", (master_id, now))
+        if cursor.fetchone()[0] >= 3:
+            apply_fraud_penalty(master_id, last_event_id, -10, 'I10_BACKHAUL_FARMING')
+            conn.commit(); conn.close()
+            return 'BLOCKED (Fraud)', 0, "🚨 I10: Backhaul toggle farming detected."
+
+    # I05 — Buddy pair farming
+    if action_id in ['BUDDY_HELP', 'WORKER_REFERRAL', 'NUDGE_VALID_BID'] and target_id:
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_Timestamp >= datetime(?, '-30 days') AND Process_Status NOT IN ('REVERSED')", (master_id, target_id, action_id, now))
+        if cursor.fetchone()[0] >= 2:
+            apply_fraud_penalty(master_id, last_event_id, -5, 'I05_PAIR_FARMING')
+            conn.commit(); conn.close()
+            return 'BLOCKED (Fraud)', 0, "🚨 I05: Pair farming limit exceeded. Integrity penalty applied."
 
     # --- BÖLÜM 5: CROSS-ROLE DUPLICATION ---
     if target_id:
@@ -278,24 +316,10 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     # --- BÖLÜM 5: DAILY FREQUENCY CAP (H01/H02/H03) ---
     if action_id in ['WORKER_VIDEO_WATCH', 'WORKER_QUIZ_ATTEMPT', 'PASS_QUIZ']:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND date(Event_Timestamp) = date(?) AND Process_Status NOT IN ('REVERSED', 'DISPUTED')", (master_id, action_id, now))
-        if cursor.fetchone()[0] >= 1: # Sadece 1 hak
+        if cursor.fetchone()[0] >= 1: 
             cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'CAPPED', Reason_Code = 'DAILY_CAP_REACHED' WHERE Event_ID = ?", (last_event_id,))
             conn.commit(); conn.close()
             return 'CAPPED', 0, "Daily frequency cap (1/day) reached. Raw event logged, 0 points."
-
-    # --- BÖLÜM 5: PAIR COOLDOWN FARMING (Buddy Help, Nudge, Referral) ---
-    if action_id in ['BUDDY_HELP', 'WORKER_REFERRAL', 'NUDGE_VALID_BID'] and target_id:
-        # Son 30 gündeki işlemlere bak
-        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_Timestamp >= datetime(?, '-30 days') AND Process_Status NOT IN ('REVERSED')", (master_id, target_id, action_id, now))
-        if cursor.fetchone()[0] >= 2: # Limit aşıldı
-            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'SETTLED', Reason_Code = 'NR10_PAIR_FARMING' WHERE Event_ID = ?", (last_event_id,))
-            cursor.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
-            s_row = cursor.fetchone()
-            n_score = min(100, max(0, s_row[0] - 5)) # Penalty
-            a_status = 'Block' if s_row[1] else ('Normal' if n_score >= 80 else 'Warning' if n_score >= 70 else 'Review' if n_score >= 50 else 'Block')
-            cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (n_score, a_status, master_id))
-            conn.commit(); conn.close()
-            return 'BLOCKED (Pair Farming)', 0, "⚠️ Pair limit exceeded. Integrity penalty (-5 pts) applied."
 
     # 2. ELIGIBLE Check
     cursor.execute("SELECT Base_Points, Cooldown, Monthly_Cap FROM Action_Registry WHERE Action_ID = ?", (action_id,))
@@ -331,33 +355,25 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'VALIDATING', Earned_Points = ?, Reason_Code = 'Awaiting Proof' WHERE Event_ID = ?", (points, last_event_id))
 
     # --- BÖLÜM 4: EVENT-CHAIN ATTRIBUTIONS (ZİNCİR İŞLEMLERİ) ---
-    
-    # Chain 1: Champion Marketplace Start
     if action_id in ['DEMAND_CREATED', 'NUDGE_VALID_BID'] and acting_role == 'Champion' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'CHAMPION_NUDGE', now + datetime.timedelta(days=7)))
         msg_string += " 🔗 (Champion tracking activated for target.)"
 
-    # Chain 4: Captain Onboarding Start
     if action_id == 'VERIFY_SIGNUP' and acting_role == 'Captain' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'CAPTAIN_ONBOARDING', now + datetime.timedelta(days=30)))
         msg_string += " 🔗 (Captain 30-day retention tracking started.)"
 
-    # Chain 5: Propagation Chain Start
     if action_id == 'REQ_SHARE_SENT' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'PROPAGATION_CHAIN', now + datetime.timedelta(days=7)))
         msg_string += " 🔗 (Propagation Chain Started.)"
         
-    # --- BÖLÜM 5: REFERRAL ATTRIBUTION WINDOW (30 Days) ---
     if action_id == 'WORKER_REFERRAL' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'REFERRAL_ACTIVATION', now + datetime.timedelta(days=30)))
 
-    # ZİNCİR ÇÖZÜMLEME (Closure/Fulfillment)
     if action_id in ['FULFILLMENT', 'DELIVERY', 'SHARE_CHAIN_FULFILLED', 'CLOSE_REQ'] and status == 'VALIDATING':
-        
-        # 1. Resolve Champion Nudge
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
         for attr in cursor.fetchall():
-            if attr[0] != master_id: # Safeguard: Champion cannot be the supplier/contractor under same Master ID
+            if attr[0] != master_id:
                 cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'CLOSURE'")
                 c_pts_row = cursor.fetchone()
                 if c_pts_row:
@@ -366,12 +382,11 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
                     cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'CHAIN_ATTRIBUTION')", (attr[0], 'Champion', master_id, 'CLOSURE', now, c_pts))
                     msg_string += f" 🏆 (Chain Completed: CLOSURE attributed to Champion {attr[0]}!)"
 
-        # 5. Resolve Propagation Chain
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'PROPAGATION_CHAIN' AND Expiry_Date > ?", (master_id, now))
         propagators_awarded = set()
         for attr in cursor.fetchall():
             if attr[0] != master_id and attr[0] not in propagators_awarded:
-                propagators_awarded.add(attr[0]) # Unique recipient başına 1 ödül
+                propagators_awarded.add(attr[0]) 
                 cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'SHARE_CHAIN_FULFILLED'")
                 p_pts_row = cursor.fetchone()
                 if p_pts_row:
@@ -398,7 +413,7 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
         'VALIDATED': ['OUTCOME_CONFIRMED', 'DISPUTED', 'REVERSED'],
         'OUTCOME_CONFIRMED': ['SETTLED', 'DISPUTED', 'REVERSED'],
         'DISPUTED': ['SETTLED', 'REVERSED'],
-        'SETTLED': ['REVERSED'] # --- BÖLÜM 5: CLAWBACK İZNİ (Settled -> Reversed) ---
+        'SETTLED': ['REVERSED'] 
     }
 
     if target_status not in valid_transitions.get(current_status, []):
@@ -414,12 +429,10 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
             cursor.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
             s_row = cursor.fetchone()
             new_score = min(100, max(0, s_row[0] + impact)) 
-            # --- BÖLÜM 6: BANT DÜZELTMESİ VE CRITICAL FLAG ---
             act_status = 'Block' if s_row[1] else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
             
     elif target_status == 'REVERSED':
-        # --- BÖLÜM 5: CLAWBACK (GERİ ALIM / NEGATIVE CARRY) ---
         if current_status in ['VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'DISPUTED']:
             cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
         elif current_status == 'SETTLED':
@@ -468,11 +481,35 @@ with tab1:
 
 with tab2:
     st.header("Ecosystem Actors & Security")
-    df_users = pd.read_sql_query("SELECT Master_ID, Primary_Role, Secondary_Roles, EID_Verified, Has_Certification, Continuous_Paid_Months, Integrity_Score, Action_Status FROM Global_Users JOIN Integrity_Profiles USING(Master_ID)", sqlite3.connect(DB_FILE))
+    df_users = pd.read_sql_query("SELECT Master_ID, Primary_Role, Secondary_Roles, EID_Verified, Has_Certification, Continuous_Paid_Months, Integrity_Score, Action_Status, Critical_Flag FROM Global_Users JOIN Integrity_Profiles USING(Master_ID)", sqlite3.connect(DB_FILE))
     def color_status(val):
         color = 'green' if val == 'Normal' else 'orange' if val == 'Warning' else 'red'
         return f'color: {color}; font-weight: bold'
     st.dataframe(df_users.style.map(color_status, subset=['Action_Status']), use_container_width=True)
+
+    # --- BÖLÜM 7: EXTERNAL FRAUD SIGNALS UI ---
+    st.markdown("---")
+    st.subheader("🕵️‍♂️ External Fraud & Abuse Signals (I01-I15)")
+    st.caption("Simulate AI/External microservice detection for complex fraud patterns (e.g., Collusion, Device Clusters). Applies Critical Flag and reverses all points.")
+    f_col1, f_col2, f_col3 = st.columns([1,2,1])
+    users_list = df_users['Master_ID'].tolist()
+    if len(users_list) > 0:
+        f_uid = f_col1.selectbox("Select Actor:", users_list, key='f_uid')
+        f_code = f_col2.selectbox("Fraud Pattern:", [
+            "I01_DUPLICATE_IDENTITY", "I04_FAKE_DEMAND", "I06_COLLUSION", "I08_FAKE_ONBOARDING", 
+            "I09_FAKE_LIQUIDITY", "I11_BUNDLE_MANIPULATION", "I12_KYC_MISMATCH", "I13_POD_REUSE", 
+            "I14_RATING_MANIPULATION", "I15_ADMIN_ABUSE"
+        ])
+        if f_col3.button("🚨 Apply Fraud Flag & Reverse", use_container_width=True):
+            conn = sqlite3.connect(DB_FILE)
+            cur = conn.cursor()
+            cur.execute("UPDATE Integrity_Profiles SET Integrity_Score = 0, Action_Status = 'Block', Critical_Flag = 1 WHERE Master_ID = ?", (f_uid,))
+            cur.execute("UPDATE Reward_Ledgers SET Reversed_Points = Reversed_Points + Settled_Points + Pending_Points, Settled_Points = 0, Pending_Points = 0 WHERE Master_ID = ?", (f_uid,))
+            cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, 'System', 'FRAUD_INTERVENTION', ?, 'REVERSED', 0, ?)", (f_uid, datetime.datetime.now(), f_code))
+            conn.commit()
+            conn.close()
+            st.success(f"Critical Flag applied to {f_uid} for {f_code}. All points reversed.")
+            st.rerun()
 
 with tab3:
     st.header("Action and Simulation Engine")
@@ -595,13 +632,11 @@ with tab4:
             for _, u in users_df.iterrows():
                 mid, role = u['Master_ID'], u['Primary_Role']
                 
-                # --- RULE FIX 2: RESET ROLLOVER IF DISQUALIFIED ---
                 if u['Integrity_Score'] < 50 or u['Action_Status'] == 'Block' or u['Critical_Flag']:
                     disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
                     continue
                 
-                # --- RULE FIX 1: ROLE-SPECIFIC MANDATORY GATES ---
                 is_qualified = True
                 if role == 'Worker':
                     cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
