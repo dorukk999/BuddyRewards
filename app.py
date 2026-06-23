@@ -143,8 +143,9 @@ def init_db():
         Event_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Acting_Role TEXT, Target_ID TEXT, Action_ID TEXT, 
         Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER, Reason_Code TEXT DEFAULT '')''')
         
+    # --- BÖLÜM 6: INTEGRITY STATUS BANDS (Critical Flag Eklendi) ---
     cursor.execute('''CREATE TABLE IF NOT EXISTS Integrity_Profiles (
-        Master_ID TEXT PRIMARY KEY, Integrity_Score INTEGER DEFAULT 100, Action_Status TEXT DEFAULT 'Normal')''')
+        Master_ID TEXT PRIMARY KEY, Integrity_Score INTEGER DEFAULT 100, Action_Status TEXT DEFAULT 'Normal', Critical_Flag BOOLEAN DEFAULT 0)''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Ledgers (
         Ledger_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Role_Ledger TEXT,
@@ -197,7 +198,7 @@ def init_db():
             cursor.execute("""INSERT INTO Global_Users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
                            (mid, f'User-{i}', primary_role, secondary_roles, 'Dubai', nat, cluster, True, sub, cert,
                             f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months))
-            cursor.execute("INSERT INTO Integrity_Profiles (Master_ID) VALUES (?)", (mid,))
+            cursor.execute("INSERT INTO Integrity_Profiles (Master_ID, Critical_Flag) VALUES (?, 0)", (mid,))
             
             cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, primary_role))
             if secondary_roles:
@@ -250,9 +251,10 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         msg_string = f"⚠️ Non-rewardable/Penalty event ({action_id}) logged. 0 points."
         
         if impact < 0:
-            cursor.execute("SELECT Integrity_Score FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
-            new_score = min(100, max(0, cursor.fetchone()[0] + impact))
-            act_status = 'Normal' if new_score >= 80 else 'Warning' if new_score >= 60 else 'Review' if new_score >= 40 else 'Block'
+            cursor.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
+            s_row = cursor.fetchone()
+            new_score = min(100, max(0, s_row[0] + impact))
+            act_status = 'Block' if s_row[1] else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
             msg_string += f" Integrity penalty applied: {impact} pts."
             
@@ -264,6 +266,36 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'SELF_LOOP_DETECTED' WHERE Event_ID = ?", (last_event_id,))
         conn.commit(); conn.close()
         return 'BLOCKED (Integrity)', 0, "Action Rejected: Self-loop or circular chain detected. You cannot target yourself."
+
+    # --- BÖLÜM 5: CROSS-ROLE DUPLICATION ---
+    if target_id:
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_ID != ?", (master_id, target_id, action_id, last_event_id))
+        if cursor.fetchone()[0] > 0:
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'CROSS_ROLE_DUPLICATION' WHERE Event_ID = ?", (last_event_id,))
+            conn.commit(); conn.close()
+            return 'BLOCKED (Duplication)', 0, "Action Rejected: Cross-role duplication block. Economic outcome already recorded."
+
+    # --- BÖLÜM 5: DAILY FREQUENCY CAP (H01/H02/H03) ---
+    if action_id in ['WORKER_VIDEO_WATCH', 'WORKER_QUIZ_ATTEMPT', 'PASS_QUIZ']:
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND date(Event_Timestamp) = date(?) AND Process_Status NOT IN ('REVERSED', 'DISPUTED')", (master_id, action_id, now))
+        if cursor.fetchone()[0] >= 1: # Sadece 1 hak
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'CAPPED', Reason_Code = 'DAILY_CAP_REACHED' WHERE Event_ID = ?", (last_event_id,))
+            conn.commit(); conn.close()
+            return 'CAPPED', 0, "Daily frequency cap (1/day) reached. Raw event logged, 0 points."
+
+    # --- BÖLÜM 5: PAIR COOLDOWN FARMING (Buddy Help, Nudge, Referral) ---
+    if action_id in ['BUDDY_HELP', 'WORKER_REFERRAL', 'NUDGE_VALID_BID'] and target_id:
+        # Son 30 gündeki işlemlere bak
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_Timestamp >= datetime(?, '-30 days') AND Process_Status NOT IN ('REVERSED')", (master_id, target_id, action_id, now))
+        if cursor.fetchone()[0] >= 2: # Limit aşıldı
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'SETTLED', Reason_Code = 'NR10_PAIR_FARMING' WHERE Event_ID = ?", (last_event_id,))
+            cursor.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
+            s_row = cursor.fetchone()
+            n_score = min(100, max(0, s_row[0] - 5)) # Penalty
+            a_status = 'Block' if s_row[1] else ('Normal' if n_score >= 80 else 'Warning' if n_score >= 70 else 'Review' if n_score >= 50 else 'Block')
+            cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (n_score, a_status, master_id))
+            conn.commit(); conn.close()
+            return 'BLOCKED (Pair Farming)', 0, "⚠️ Pair limit exceeded. Integrity penalty (-5 pts) applied."
 
     # 2. ELIGIBLE Check
     cursor.execute("SELECT Base_Points, Cooldown, Monthly_Cap FROM Action_Registry WHERE Action_ID = ?", (action_id,))
@@ -314,6 +346,10 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     if action_id == 'REQ_SHARE_SENT' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'PROPAGATION_CHAIN', now + datetime.timedelta(days=7)))
         msg_string += " 🔗 (Propagation Chain Started.)"
+        
+    # --- BÖLÜM 5: REFERRAL ATTRIBUTION WINDOW (30 Days) ---
+    if action_id == 'WORKER_REFERRAL' and target_id and status == 'VALIDATING':
+        cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'REFERRAL_ACTIVATION', now + datetime.timedelta(days=30)))
 
     # ZİNCİR ÇÖZÜMLEME (Closure/Fulfillment)
     if action_id in ['FULFILLMENT', 'DELIVERY', 'SHARE_CHAIN_FULFILLED', 'CLOSE_REQ'] and status == 'VALIDATING':
@@ -361,25 +397,34 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
         'VALIDATING': ['VALIDATED', 'DISPUTED', 'REVERSED', 'EXPIRED'],
         'VALIDATED': ['OUTCOME_CONFIRMED', 'DISPUTED', 'REVERSED'],
         'OUTCOME_CONFIRMED': ['SETTLED', 'DISPUTED', 'REVERSED'],
-        'DISPUTED': ['SETTLED', 'REVERSED']
+        'DISPUTED': ['SETTLED', 'REVERSED'],
+        'SETTLED': ['REVERSED'] # --- BÖLÜM 5: CLAWBACK İZNİ (Settled -> Reversed) ---
     }
 
     if target_status not in valid_transitions.get(current_status, []):
         return False, f"Invalid transition from {current_status} to {target_status}."
 
-    if target_status == 'SETTLED':
+    if target_status == 'SETTLED' and current_status != 'SETTLED':
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Settled_Points = Settled_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
         reason_code = reason_code if reason_code else "APPROVED_CLEAN"
+        
         cursor.execute("SELECT Integrity_Impact FROM Action_Registry WHERE Action_ID = ?", (action_id,))
         impact = cursor.fetchone()[0]
         if impact != 0:
-            cursor.execute("SELECT Integrity_Score FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
-            new_score = min(100, max(0, cursor.fetchone()[0] + impact)) 
-            act_status = 'Normal' if new_score >= 80 else 'Warning' if new_score >= 60 else 'Review' if new_score >= 40 else 'Block'
+            cursor.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
+            s_row = cursor.fetchone()
+            new_score = min(100, max(0, s_row[0] + impact)) 
+            # --- BÖLÜM 6: BANT DÜZELTMESİ VE CRITICAL FLAG ---
+            act_status = 'Block' if s_row[1] else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
             
     elif target_status == 'REVERSED':
-        cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
+        # --- BÖLÜM 5: CLAWBACK (GERİ ALIM / NEGATIVE CARRY) ---
+        if current_status in ['VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'DISPUTED']:
+            cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
+        elif current_status == 'SETTLED':
+            cursor.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
+            
         reason_code = reason_code if reason_code else "FAILED_PROOF_OR_FRAUD"
 
     cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ?, Reason_Code = ? WHERE Event_ID = ?", (target_status, reason_code, event_id))
@@ -484,7 +529,7 @@ with tab3:
             st.session_state.lifecycle_error = ""
 
         conn = sqlite3.connect(DB_FILE)
-        pending_val = pd.read_sql_query("SELECT Event_ID, Action_ID, Process_Status, Earned_Points FROM Event_Stream_Logs WHERE Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED')", conn)
+        pending_val = pd.read_sql_query("SELECT Event_ID, Action_ID, Process_Status, Earned_Points FROM Event_Stream_Logs WHERE Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED')", conn)
         pending_disp = pd.read_sql_query("SELECT Event_ID, Action_ID, Reason_Code FROM Event_Stream_Logs WHERE Process_Status = 'DISPUTED'", conn)
         conn.close()
         
@@ -540,7 +585,7 @@ with tab4:
             cur = conn.cursor()
             curr_month = st.session_state.current_simulation_month
             users_df = pd.read_sql_query("""
-                SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, i.Integrity_Score, i.Action_Status,
+                SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, i.Integrity_Score, i.Action_Status, i.Critical_Flag,
                        COALESCE((SELECT SUM(Settled_Points) FROM Reward_Ledgers WHERE Master_ID = u.Master_ID), 0) as Base_Score,
                        m.Rollover_Bonus
                 FROM Global_Users u JOIN Integrity_Profiles i ON u.Master_ID = i.Master_ID JOIN Monthly_Qualified_Users m ON u.Master_ID = m.Master_ID
@@ -550,11 +595,13 @@ with tab4:
             for _, u in users_df.iterrows():
                 mid, role = u['Master_ID'], u['Primary_Role']
                 
-                if u['Integrity_Score'] < 80 or u['Action_Status'] == 'Block':
+                # --- RULE FIX 2: RESET ROLLOVER IF DISQUALIFIED ---
+                if u['Integrity_Score'] < 50 or u['Action_Status'] == 'Block' or u['Critical_Flag']:
                     disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
                     continue
                 
+                # --- RULE FIX 1: ROLE-SPECIFIC MANDATORY GATES ---
                 is_qualified = True
                 if role == 'Worker':
                     cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
@@ -629,7 +676,7 @@ with tab4:
             for a, t in MEGA_TARGETS.items():
                 for _ in range(t): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', ?, ?, 'SETTLED')", (a, now))
             cur.execute("UPDATE Global_Users SET EID_Verified=1, Has_Certification=1, Continuous_Paid_Months=6 WHERE Master_ID='ID-1'")
-            cur.execute("UPDATE Integrity_Profiles SET Integrity_Score=100, Action_Status='Normal' WHERE Master_ID='ID-1'")
+            cur.execute("UPDATE Integrity_Profiles SET Integrity_Score=100, Action_Status='Normal', Critical_Flag=0 WHERE Master_ID='ID-1'")
             conn.commit()
             conn.close()
             st.success("Mega data injected for ID-1!")
@@ -647,9 +694,9 @@ with tab4:
                 elif m_cert and not w['Has_Certification']: fail_reason = 'MEGA_CERT_FAILED'
                 elif w['Continuous_Paid_Months'] < req_months: fail_reason = 'MEGA_SUBSCRIPTION_FAILED'
                 else:
-                    cur.execute("SELECT Integrity_Score, Action_Status FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
-                    i_score, i_status = cur.fetchone()
-                    if i_score < 80 or i_status == 'Block': fail_reason = 'MEGA_INTEGRITY_FAILED'
+                    cur.execute("SELECT Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
+                    i_score, i_status, c_flag = cur.fetchone()
+                    if i_score < 50 or i_status == 'Block' or c_flag: fail_reason = 'MEGA_INTEGRITY_FAILED'
                 
                 if not fail_reason and m_excl:
                     cur.execute("SELECT COUNT(*) FROM Past_Winners WHERE Master_ID=?", (mid,))
