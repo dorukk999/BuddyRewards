@@ -289,10 +289,81 @@ def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
 # --- CORE ENGINE FUNCTIONS ---
+
+def trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver, now):
+    """
+    Helps resolving BÖLÜM 1: EVENT LIFECYCLE — OUTCOME BONUS MEKANİZMASI & 
+    BÖLÜM 2.4: Champion Self-Loop Safeguard.
+    """
+    msg_string = ""
+    if action_id in ['FULFILLMENT', 'DELIVERY', 'SHARE_CHAIN_FULFILLED', 'CLOSE_REQ']:
+        # CHAMPION CLOSURE CHAIN
+        cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
+        for attr in cursor.fetchall():
+            champion_id = attr[0]
+            
+            # SAFEGUARD 1: Champion aynı kişi olamaz
+            if champion_id == master_id: continue
+            
+            if target_id:
+                # SAFEGUARD 2: Champion aynı requirement'ta supplier/contractor olarak da event üretmiş mi?
+                cursor.execute("""
+                    SELECT COUNT(*) FROM Event_Stream_Logs 
+                    WHERE Master_ID = ? AND Target_ID = ? 
+                    AND Action_ID IN ('QUOTE', 'FULFILLMENT', 'POST_REQ', 'ACCEPT_BID')
+                    AND Process_Status NOT IN ('REVERSED', 'EXPIRED')
+                """, (champion_id, target_id))
+                if cursor.fetchone()[0] > 0: continue
+                
+                # SAFEGUARD 3: Bu requirement için daha önce closure verilmiş mi?
+                cursor.execute("""
+                    SELECT COUNT(*) FROM Event_Stream_Logs 
+                    WHERE Master_ID = ? AND Action_ID = 'CLOSURE' AND Target_ID = ?
+                    AND Process_Status NOT IN ('REVERSED', 'EXPIRED')
+                """, (champion_id, target_id))
+                if cursor.fetchone()[0] > 0: continue
+                
+            cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'CLOSURE'")
+            c_pts_row = cursor.fetchone()
+            if c_pts_row:
+                c_pts = c_pts_row[0]
+                cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Champion'", (c_pts, champion_id))
+                cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, 'Champion', ?, 'CLOSURE', ?, 'VALIDATING', ?, 'CHAIN_ATTRIBUTION', ?)", (champion_id, target_id if target_id else master_id, now, c_pts, rule_ver))
+                msg_string += f" 🏆 (Chain Completed: CLOSURE attributed to Champion {champion_id}!)"
+
+        # PROPAGATION CHAIN
+        cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'PROPAGATION_CHAIN' AND Expiry_Date > ?", (master_id, now))
+        propagators_awarded = set()
+        for attr in cursor.fetchall():
+            prop_id = attr[0]
+            if prop_id == master_id or prop_id in propagators_awarded: continue
+            
+            if target_id:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM Event_Stream_Logs 
+                    WHERE Master_ID = ? AND Action_ID = 'SHARE_CHAIN_FULFILLED' AND Target_ID = ?
+                    AND Process_Status NOT IN ('REVERSED', 'EXPIRED')
+                """, (prop_id, target_id))
+                if cursor.fetchone()[0] > 0: continue
+                
+            propagators_awarded.add(prop_id) 
+            cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'SHARE_CHAIN_FULFILLED'")
+            p_pts_row = cursor.fetchone()
+            if p_pts_row:
+                p_pts = p_pts_row[0]
+                cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Worker'", (p_pts, prop_id))
+                cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, 'Worker', ?, 'SHARE_CHAIN_FULFILLED', ?, 'VALIDATING', ?, 'PROPAGATION_ATTRIBUTION', ?)", (prop_id, target_id if target_id else master_id, now, p_pts, rule_ver))
+                msg_string += f" 🔗 (Chain Completed: Propagator {prop_id} awarded FULFILLED!)"
+                
+    return msg_string
+
+
 def expire_events():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     now = datetime.datetime.now()
+    
+    # 1. Normal validity window expiration
     cursor.execute("""
         UPDATE Event_Stream_Logs 
         SET Process_Status = 'EXPIRED', Reason_Code = 'VALIDITY_WINDOW_EXPIRED'
@@ -303,6 +374,37 @@ def expire_events():
     expired_events = cursor.execute("SELECT Master_ID, Acting_Role, Earned_Points FROM Event_Stream_Logs WHERE Process_Status = 'EXPIRED' AND Event_Timestamp < datetime(?, '-7 days')", (now,)).fetchall()
     for master_id, acting_role, points in expired_events:
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
+        
+    # --- BÖLÜM 2.1: TRANS. BACKHAUL CHAIN PROVISIONAL CHECK ---
+    cursor.execute("""
+        SELECT Source_ID, Attribution_ID FROM Marketplace_Attributions 
+        WHERE Attribution_Type = 'BACKHAUL_PROVISIONAL' AND Expiry_Date < ?
+    """, (now,))
+    
+    for source_id, attr_id in cursor.fetchall():
+        # Check if TR03 or TR06 exists in the window
+        cursor.execute("""
+            SELECT COUNT(*) FROM Event_Stream_Logs 
+            WHERE Master_ID = ? AND Action_ID IN ('ACCEPT_BACKHAUL', 'DELIVERY') 
+            AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED')
+            AND Event_Timestamp >= datetime(?, '-7 days')
+        """, (source_id, now))
+        
+        if cursor.fetchone()[0] == 0:
+            # Gerçek trip yok — TR02 puanlarını reverse et
+            cursor.execute("""
+                SELECT Event_ID, Earned_Points FROM Event_Stream_Logs 
+                WHERE Master_ID = ? AND Action_ID = 'RETURN_TRIP' 
+                AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED')
+                ORDER BY Event_ID DESC LIMIT 1
+            """, (source_id,))
+            tr02_event = cursor.fetchone()
+            if tr02_event:
+                ev_id, pts = tr02_event
+                cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'FAKE_BACKHAUL' WHERE Event_ID = ?", (ev_id,))
+                cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Transporter'", (pts, pts, source_id))
+        
+        cursor.execute("DELETE FROM Marketplace_Attributions WHERE Attribution_ID = ?", (attr_id,))
         
     conn.commit()
     conn.close()
@@ -334,6 +436,23 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
             msg_string += f" Integrity penalty applied: {impact} pts."
             
+        # --- BÖLÜM 2.3: CONTRACTOR DEMAND CHAIN (SPAM REVERSAL) ---
+        if action_id == 'NR06_SPAM_REQUIREMENT' and target_id:
+            cursor.execute("""
+                SELECT Event_ID, Earned_Points, Process_Status FROM Event_Stream_Logs 
+                WHERE Master_ID = ? AND Action_ID = 'POST_REQ' AND Target_ID = ?
+                AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED')
+                ORDER BY Event_ID DESC LIMIT 1
+            """, (master_id, target_id))
+            ct01_event = cursor.fetchone()
+            if ct01_event:
+                ev_id, pts, p_status = ct01_event
+                cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'REQ_CANCELLED_INVALID' WHERE Event_ID = ?", (ev_id,))
+                if p_status == 'SETTLED':
+                    cursor.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Contractor'", (pts, pts, master_id))
+                else:
+                    cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Contractor'", (pts, pts, master_id))
+            
         conn.commit(); conn.close()
         return 'SETTLED', 0, msg_string
 
@@ -350,12 +469,12 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     if cursor.fetchone()[0] >= 10:
         apply_fraud_penalty(master_id, last_event_id, -10, 'VELOCITY_SPIKE')
         conn.commit(); conn.close()
-        return 'BLOCKED (Fraud)', 0, "🚨 VELOCITY_SPIKE: Last-minute velocity spike detected."
+        return 'BLOCKED (Fraud)', 0, "🚨 VELOCITY_SPIKE: Last-minute velocity spike detected. Integrity penalty applied."
 
     if target_id == master_id:
         apply_fraud_penalty(master_id, last_event_id, -20, 'SELF_REFERRAL', set_critical=True)
         conn.commit(); conn.close()
-        return 'BLOCKED (Fraud)', 0, "🚨 SELF_REFERRAL: Self/circular interaction detected."
+        return 'BLOCKED (Fraud)', 0, "🚨 SELF_REFERRAL: Self/circular interaction detected. Critical Flag applied."
 
     if action_id in ['SUPPLIER_ADDED', 'TRANSPORTER_ADDED'] and target_id:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Target_ID = ? AND Action_ID IN ('SUPPLIER_ADDED', 'TRANSPORTER_ADDED') AND Event_ID != ?", (target_id, last_event_id))
@@ -376,7 +495,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         if cursor.fetchone()[0] >= 2:
             apply_fraud_penalty(master_id, last_event_id, -5, 'PAIR_COOLDOWN')
             conn.commit(); conn.close()
-            return 'BLOCKED (Fraud)', 0, "🚨 PAIR_COOLDOWN: Pair farming limit exceeded."
+            return 'BLOCKED (Fraud)', 0, "🚨 PAIR_COOLDOWN: Pair farming limit exceeded. Integrity penalty applied."
 
     if target_id:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_ID != ?", (master_id, target_id, action_id, last_event_id))
@@ -385,7 +504,18 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             conn.commit(); conn.close()
             return 'BLOCKED (Duplication)', 0, "Action Rejected: Cross-role duplication block."
 
-    # --- BÖLÜM 16: CAPPED STATUS FIX ---
+    # --- BÖLÜM 2.2: MULTI-PICKUP TRIP CHAIN DUPLICATE CHECK ---
+    if action_id == 'COMPLETE_BUNDLED_TRIP' and target_id:
+        cursor.execute("""
+            SELECT COUNT(*) FROM Event_Stream_Logs 
+            WHERE Master_ID = ? AND Action_ID = 'COMPLETE_BUNDLED_TRIP' AND Target_ID = ?
+            AND Process_Status NOT IN ('REVERSED', 'EXPIRED') AND Event_ID != ?
+        """, (master_id, target_id, last_event_id))
+        if cursor.fetchone()[0] > 0:
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'DUPLICATE_PROVIDER' WHERE Event_ID = ?", (last_event_id,))
+            conn.commit(); conn.close()
+            return 'BLOCKED (Fraud)', 0, "🚨 DUPLICATE_PROVIDER: Duplicate bundled trip. Reversed."
+
     if action_id in ['WORKER_VIDEO_WATCH', 'WORKER_QUIZ_ATTEMPT', 'PASS_QUIZ']:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND date(Event_Timestamp) = date(?) AND Process_Status NOT IN ('REVERSED', 'DISPUTED')", (master_id, action_id, now))
         if cursor.fetchone()[0] >= 1: 
@@ -415,7 +545,6 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         conn.commit(); conn.close()
         return 'BLOCKED (Cooldown)', 0, "Action Rejected (Blocked by cooldown or duplicate record limits)."
 
-    # --- BÖLÜM 16: CAPPED STATUS FIX ---
     cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED') AND Cap_Cooldown_Result IS NULL", (master_id, action_id, current_month_str))
     if cursor.fetchone()[0] >= monthly_cap:
         cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE', Reason_Code = 'MONTHLY_CAP_REACHED', Cap_Cooldown_Result = 'CAPPED' WHERE Event_ID = ?", (last_event_id,))
@@ -440,30 +569,14 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     if action_id == 'WORKER_REFERRAL' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'REFERRAL_ACTIVATION', now + datetime.timedelta(days=30)))
 
-    if action_id in ['FULFILLMENT', 'DELIVERY', 'SHARE_CHAIN_FULFILLED', 'CLOSE_REQ'] and status == 'VALIDATING':
-        cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
-        for attr in cursor.fetchall():
-            if attr[0] != master_id:
-                cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'CLOSURE'")
-                c_pts_row = cursor.fetchone()
-                if c_pts_row:
-                    c_pts = c_pts_row[0]
-                    cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Champion'", (c_pts, attr[0]))
-                    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'OUTCOME_NOT_CONFIRMED', ?)", (attr[0], 'Champion', master_id, 'CLOSURE', now, c_pts, rule_ver))
-                    msg_string += f" 🏆 (Chain Completed: CLOSURE attributed to Champion {attr[0]}!)"
+    # --- BÖLÜM 2.1: BACKHAUL PROVISIONAL INSERTION ---
+    if action_id == 'RETURN_TRIP' and status == 'VALIDATING':
+        cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, 'BACKHAUL_PROVISIONAL', ?)", 
+                       (master_id, master_id, now + datetime.timedelta(days=7)))
 
-        cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'PROPAGATION_CHAIN' AND Expiry_Date > ?", (master_id, now))
-        propagators_awarded = set()
-        for attr in cursor.fetchall():
-            if attr[0] != master_id and attr[0] not in propagators_awarded:
-                propagators_awarded.add(attr[0]) 
-                cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'SHARE_CHAIN_FULFILLED'")
-                p_pts_row = cursor.fetchone()
-                if p_pts_row:
-                    p_pts = p_pts_row[0]
-                    cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Worker'", (p_pts, attr[0]))
-                    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'OUTCOME_NOT_CONFIRMED', ?)", (attr[0], 'Worker', master_id, 'SHARE_CHAIN_FULFILLED', now, p_pts, rule_ver))
-                    msg_string += f" 🔗 (Chain Completed: Propagator {attr[0]} awarded FULFILLED!)"
+    if action_id in ['FULFILLMENT', 'DELIVERY', 'SHARE_CHAIN_FULFILLED', 'CLOSE_REQ'] and status == 'VALIDATING':
+        msg_extra = trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver, now)
+        msg_string += msg_extra
 
     conn.commit()
     conn.close()
@@ -472,11 +585,11 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
 def progress_event_lifecycle(event_id, target_status, reason_code=""):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT Master_ID, Acting_Role, Action_ID, Earned_Points, Process_Status FROM Event_Stream_Logs WHERE Event_ID = ?", (event_id,))
+    cursor.execute("SELECT Master_ID, Acting_Role, Action_ID, Earned_Points, Process_Status, Target_ID, Rule_Version FROM Event_Stream_Logs WHERE Event_ID = ?", (event_id,))
     event = cursor.fetchone()
     
     if not event: return False, "Event not found."
-    master_id, acting_role, action_id, points, current_status = event
+    master_id, acting_role, action_id, points, current_status, target_id, rule_ver = event
     
     if current_status == target_status:
         return False, "Idempotency Protection: Target state is the same as current state."
@@ -506,6 +619,12 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
             new_score = min(100, max(0, s_row[0] + impact)) 
             act_status = 'Block' if s_row[1] else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
+
+    # --- BÖLÜM 1: OUTCOME BONUS IN LIFECYCLE TRANSITION ---        
+    if target_status in ['OUTCOME_CONFIRMED', 'SETTLED'] and current_status not in ['OUTCOME_CONFIRMED', 'SETTLED']:
+        if target_status == 'OUTCOME_CONFIRMED':
+            reason_code = reason_code if reason_code else "OUTCOME_NOT_CONFIRMED"
+        trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver, datetime.datetime.now())
             
     elif target_status == 'REVERSED':
         if current_status in ['VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'DISPUTED']:
@@ -530,6 +649,9 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
                 is_crit = 1 if set_critical else s_row[1]
                 act_status = 'Block' if is_crit else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
                 cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ?, Critical_Flag = ? WHERE Master_ID = ?", (new_score, act_status, is_crit, master_id))
+
+    if target_status == 'OUTCOME_CONFIRMED':
+        reason_code = "APPROVED_CLEAN"
 
     cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ?, Reason_Code = ? WHERE Event_ID = ?", (target_status, reason_code, event_id))
     conn.commit()
@@ -826,8 +948,6 @@ with tab4:
                     continue
                 
                 is_qualified = True
-                
-                # BÖLÜM 16: CAPPED durumları artık Cap_Cooldown_Result içinde saklanıyor.
                 cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
                 counts = dict(cur.fetchall())
 
@@ -1300,7 +1420,6 @@ with tab6:
         st.dataframe(pd.read_sql_query("SELECT * FROM Past_Winners", conn), use_container_width=True)
     conn.close()
 
-# --- BÖLÜM 14.2 & 14.3: YENİ RAPORLAMA SEKMESİ ---
 with tab7:
     st.header("📊 Simulator Reports & Analytics")
     st.caption("Access all 19 missing operational and financial reports as specified in PDF Section 16 & 18.")
@@ -1363,7 +1482,6 @@ with tab7:
             
     if not df_report.empty:
         st.dataframe(df_report, use_container_width=True)
-        # P3 EXPORT (XLSX/PDF/CSV) - Eklenen Kod
         st.download_button(label="📥 Export to CSV", data=convert_df_to_csv(df_report), file_name="report.csv", mime='text/csv')
             
     conn.close()
