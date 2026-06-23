@@ -171,7 +171,7 @@ MEGA_TARGETS = {
 REASON_CODES = {
     "Eligibility": ["HABIT_VIDEO_MIN_FAILED", "HABIT_QUIZ_MIN_FAILED", "REFERRAL_MIN_FAILED", "ROLE_GATE_FAILED", "INTEGRITY_FAILED"],
     "Validation": ["PROOF_MISSING", "POD_INVALID", "DUPLICATE_PROVIDER", "INVALID_TRIP", "OUTCOME_NOT_CONFIRMED"],
-    "Caps_Cooldowns": ["DAILY_CAP_REACHED", "MONTHLY_CAP_REACHED", "EXACT_REPEAT_COOLDOWN", "PAIR_COOLDOWN"],
+    "Caps_Cooldowns": ["DAILY_CAP_REACHED", "MONTHLY_CAP_REACHED", "EXACT_REPEAT_COOLDOWN", "PAIR_COOLDOWN", "COLLUSION_SUSPECTED"],
     "Integrity": ["SELF_REFERRAL", "COLLUSION_SUSPECTED", "DUPLICATE_IDENTITY", "VELOCITY_SPIKE", "FAKE_BACKHAUL"],
     "Monthly_Selection": ["APPROVED", "WINNER_CAP_FULL", "REPEAT_COHORT_EXCLUDED", "NATIONALITY_CAP", "GEOGRAPHY_CAP", "CAMP_CAP", "ROLLOVER_APPLIED", "QUALIFIED_NOT_FUNDED"],
     "Mega": ["MEGA_APPROVED", "MEGA_EID_FAILED", "MEGA_CERT_FAILED", "MEGA_SUBSCRIPTION_FAILED", "MEGA_INTEGRITY_FAILED", "MEGA_MONTHLY_WINNER_EXCLUDED", "MEGA_COUNTS_FAILED"],
@@ -417,7 +417,6 @@ def expire_events():
     cursor = conn.cursor()
     now = datetime.datetime.now()
     
-    # --- PROVISIONAL BACKHAUL CHECK (Moved UP to prevent being blindly expired) ---
     cursor.execute("""
         SELECT Source_ID, Attribution_ID FROM Marketplace_Attributions 
         WHERE Attribution_Type = 'BACKHAUL_PROVISIONAL' AND Expiry_Date < ?
@@ -446,7 +445,6 @@ def expire_events():
         
         cursor.execute("DELETE FROM Marketplace_Attributions WHERE Attribution_ID = ?", (attr_id,))
 
-    # --- GENERAL VALIDITY WINDOW EXPIRATION ---
     to_expire = cursor.execute("""
         SELECT Event_ID, Master_ID, Acting_Role, Earned_Points 
         FROM Event_Stream_Logs 
@@ -560,10 +558,11 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             conn.commit(); conn.close()
             return 'BLOCKED (Attribution)', 0, "Attribution window (30 days) expired. No reward."
 
-    if target_id:
-        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_ID != ?", (master_id, target_id, action_id, last_event_id))
+    # --- CROSS-ROLE DUPLICATION (Corrected to block different roles acting on the same target) ---
+    if target_id and acting_role in ['Contractor', 'Supplier', 'Transporter', 'Champion']:
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Acting_Role IN ('Contractor', 'Supplier', 'Transporter', 'Champion') AND Acting_Role != ? AND Event_ID != ?", (master_id, target_id, acting_role, last_event_id))
         if cursor.fetchone()[0] > 0:
-            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'EXACT_REPEAT_COOLDOWN' WHERE Event_ID = ?", (last_event_id,))
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'COLLUSION_SUSPECTED' WHERE Event_ID = ?", (last_event_id,))
             conn.commit(); conn.close()
             return 'BLOCKED (Duplication)', 0, "Action Rejected: Cross-role duplication block."
 
@@ -579,7 +578,6 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             return 'BLOCKED (Fraud)', 0, "🚨 DUPLICATE_PROVIDER: Duplicate bundled trip. Reversed."
 
     if action_id in ['WORKER_VIDEO_WATCH', 'WORKER_QUIZ_ATTEMPT', 'PASS_QUIZ']:
-        # Fix for Daily Cap counting bug
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND date(Event_Timestamp) = date(?) AND Process_Status NOT IN ('REVERSED', 'DISPUTED') AND Event_ID != ?", (master_id, action_id, now, last_event_id))
         if cursor.fetchone()[0] >= 1: 
             cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE', Reason_Code = 'DAILY_CAP_REACHED', Cap_Cooldown_Result = 'CAPPED' WHERE Event_ID = ?", (last_event_id,))
@@ -596,8 +594,8 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     base_points, cooldown, monthly_cap = act_meta
     cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE' WHERE Event_ID = ?", (last_event_id,))
 
-    query_cooldown = "SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED') AND Event_Timestamp >= datetime(?, '-' || ? || ' minutes')"
-    params_cd = [master_id, action_id, now, cooldown]
+    query_cooldown = "SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED') AND Event_Timestamp >= datetime(?, '-' || ? || ' minutes') AND Event_ID != ?"
+    params_cd = [master_id, action_id, now, cooldown, last_event_id]
     if target_id:
         query_cooldown += " AND Target_ID = ?"
         params_cd.append(target_id)
@@ -1960,9 +1958,19 @@ def execute_real_qa_test(tc_id):
                 trace.append("Assertion ❌: Circular referral not properly blocked.")
 
         elif tc_id == "TC-W-01":
-            trace.append("Step 1: Executing 3 consecutive BUDDY_HELP to the same target...")
-            execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
-            execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
+            trace.append("Step 1: Executing 1st BUDDY_HELP...")
+            status1, pts1, msg1 = execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
+            trace.append(f"-> 1st Attempt Result: {status1}")
+            cur.execute("UPDATE Event_Stream_Logs SET Event_Timestamp=? WHERE Master_ID=? AND Action_ID='BUDDY_HELP'", (now - datetime.timedelta(minutes=300), test_uid))
+            conn.commit()
+
+            trace.append("Step 2: Executing 2nd BUDDY_HELP (Bypassing Cooldown with Time Travel)...")
+            status2, pts2, msg2 = execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
+            trace.append(f"-> 2nd Attempt Result: {status2}")
+            cur.execute("UPDATE Event_Stream_Logs SET Event_Timestamp=? WHERE Master_ID=? AND Action_ID='BUDDY_HELP' AND Event_Timestamp >= ?", (now - datetime.timedelta(minutes=150), test_uid, now - datetime.timedelta(minutes=1)))
+            conn.commit()
+
+            trace.append("Step 3: Executing 3rd BUDDY_HELP (Should trigger PAIR_COOLDOWN)...")
             status3, pts3, msg3 = execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
             trace.append(f"-> 3rd Attempt Result: {status3} | Msg: {msg3}")
 
@@ -1974,7 +1982,7 @@ def execute_real_qa_test(tc_id):
                 trace.append("Assertion ✅: Pair farming detected. 3rd attempt blocked by PAIR_COOLDOWN.")
             else:
                 passed = False
-                trace.append("Assertion ❌: Pair farming not blocked.")
+                trace.append(f"Assertion ❌: Pair farming not blocked. Result was: {row}")
 
         elif tc_id == "TC-TR-01":
             trace.append("Step 1: Enabling RETURN_TRIP (Provisional)...")
