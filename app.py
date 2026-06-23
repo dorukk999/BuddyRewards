@@ -6,6 +6,8 @@ import random
 import os
 import json
 import hashlib
+import io
+from decimal import Decimal, ROUND_HALF_UP
 
 # --- PAGE SETTINGS ---
 st.set_page_config(page_title="Buddy Rewards - Ultimate Engine", layout="wide")
@@ -27,6 +29,11 @@ if 'random_seed' not in st.session_state:
     st.session_state.random_seed = 42
 
 random.seed(st.session_state.random_seed)
+
+# --- DECIMAL HELPER ---
+def safe_money(value):
+    """Convert to Decimal with 2 decimal places"""
+    return Decimal(str(value)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 # --- UNIVERSAL ACTION REGISTRY ---
 UNIVERSAL_ACTION_REGISTRY = [
@@ -263,7 +270,6 @@ def init_db():
             loc = locations[i % len(locations)]
             sub = i % 2 == 0
             cert = i % 3 == 0
-            # --- BÖLÜM 5.1 COMPANY SPONSOR DATA INJECTION ---
             company_val = f"Company-{i}" if i % 4 == 0 else ""
             
             join_date = datetime.datetime.now() - datetime.timedelta(days=random.randint(10, 200))
@@ -275,11 +281,9 @@ def init_db():
                             join_date.month, loc, company_val))
             
             cursor.execute("INSERT INTO Integrity_Profiles (Master_ID, Critical_Flag) VALUES (?, 0)", (mid,))
-            
             cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, primary_role))
             if secondary_roles:
                 cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, secondary_roles))
-            
             cursor.execute("INSERT INTO Monthly_Qualified_Users VALUES (?, ?, ?)", (mid, 0, 0)) 
             
     conn.commit()
@@ -287,10 +291,17 @@ def init_db():
 
 init_db()
 
-# --- CSV EXPORT HELPER ---
+# --- CSV & XLSX EXPORT HELPER ---
 @st.cache_data
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
+
+@st.cache_data
+def convert_df_to_xlsx(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
 
 # --- CORE ENGINE FUNCTIONS ---
 
@@ -785,6 +796,47 @@ with tab2:
             st.success(f"Critical Flag applied to {f_uid} for {f_code}. All points reversed.")
             st.rerun()
 
+    # --- BÖLÜM 8.2: CONFIGURABLE FRAUD INJECTION ---
+    st.markdown("---")
+    st.subheader("🎭 Bulk Fraud Injection Tool")
+    bf_col1, bf_col2, bf_col3 = st.columns(3)
+    fraud_rate = bf_col1.slider("Fraud Rate (%)", 1, 30, 5)
+    fraud_patterns = bf_col2.multiselect("Patterns to Inject:", [
+        "VELOCITY_SPIKE", "SELF_REFERRAL", "DUPLICATE_PROVIDER", 
+        "FAKE_BACKHAUL", "PAIR_FARMING", "COLLUSION"
+    ], default=["VELOCITY_SPIKE"])
+    fraud_target_count = bf_col3.number_input("Target User Count:", value=10)
+
+    if st.button("🎭 Inject Bulk Fraud Events"):
+        conn = sqlite3.connect(DB_FILE)
+        all_users = pd.read_sql_query("SELECT Master_ID FROM Global_Users", conn)['Master_ID'].tolist()
+        sample_size = min(fraud_target_count, len(all_users))
+        fraud_users = random.sample(all_users, int(sample_size))
+        
+        for user in fraud_users:
+            if not fraud_patterns: continue
+            pattern = random.choice(fraud_patterns)
+            if pattern == "VELOCITY_SPIKE":
+                for _ in range(12): execute_action(user, 'Worker', 'WORKER_VIDEO_WATCH')
+            elif pattern == "SELF_REFERRAL":
+                execute_action(user, 'Worker', 'WORKER_REFERRAL', user)
+            elif pattern == "DUPLICATE_PROVIDER":
+                execute_action(user, 'Worker', 'SUPPLIER_ADDED', 'TARGET_SUPP_1')
+                execute_action(user, 'Worker', 'SUPPLIER_ADDED', 'TARGET_SUPP_1')
+            elif pattern == "FAKE_BACKHAUL":
+                for _ in range(4): execute_action(user, 'Transporter', 'RETURN_TRIP')
+            elif pattern == "PAIR_FARMING":
+                execute_action(user, 'Worker', 'BUDDY_HELP', 'USER_X')
+                execute_action(user, 'Worker', 'BUDDY_HELP', 'USER_X')
+                execute_action(user, 'Worker', 'BUDDY_HELP', 'USER_X')
+            elif pattern == "COLLUSION":
+                conn.execute("UPDATE Integrity_Profiles SET Integrity_Score = 0, Action_Status = 'Block', Critical_Flag = 1 WHERE Master_ID = ?", (user,))
+                conn.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, 'System', 'FRAUD_INTERVENTION', ?, 'REVERSED', 0, 'I06_COLLUSION', ?)", (user, datetime.datetime.now(), st.session_state.rule_version))
+        
+        conn.commit()
+        conn.close()
+        st.success(f"Injected fraud for {len(fraud_users)} users with patterns: {fraud_patterns}")
+
 with tab3:
     st.header("Action and Simulation Engine")
     users = pd.read_sql_query("SELECT Master_ID, Primary_Role, Secondary_Roles, Has_Subscription, Has_Certification FROM Global_Users", sqlite3.connect(DB_FILE))
@@ -812,29 +864,64 @@ with tab3:
                     st.success(msg)
                 else: 
                     st.error(msg)
-            
+
+        # --- BÖLÜM 8.1: OUTCOME-CHAIN GENERATOR ---
         st.markdown("---")
-        st.caption("Inject Worker test data to exceed monthly minimums (QA Multi-Day Simulator)")
-        if st.button("Simulate 30/30/15 Minimums for Top 5 Workers"):
-            conn = sqlite3.connect(DB_FILE)
-            cur = conn.cursor()
-            workers = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
-            now = datetime.datetime.now()
-            rule_ver = st.session_state.rule_version
-            for w in workers[:5]: 
-                for day in range(30):
-                    sim_date = now - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                for day in range(15): 
-                    sim_date = now - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10, ?)", (w, sim_date, rule_ver))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-            conn.commit()
-            conn.close()
-            st.success("Successfully pushed 30/30/15 Multi-Day SETTLED events for top 5 workers!")
+        st.subheader("🔗 Outcome-Chain Generator")
+        chain_type = st.selectbox("Chain Type:", [
+            "Champion Marketplace (Trigger→Bid→Accept→Fulfill→Close)",
+            "Transporter Backhaul (Enable→Accept→Deliver)",
+            "Multi-Pickup (Enable→Bundle→Deliver)",
+            "Captain Onboarding (Signup→Activate→Retain)",
+            "Propagation (Share→Open→Engage→Fulfill)",
+            "Contractor Demand (Post→Respond→Accept→Validate)"
+        ])
+        
+        chain_stop = st.selectbox("Stop at Stage:", [
+            "Trigger Only (partial chain)",
+            "Response Only",
+            "Completed (full chain)",
+            "Reversed (chain fails midway)"
+        ])
+        
+        chain_actor = st.selectbox("Actor:", users['Master_ID'].tolist(), key="chain_actor")
+        chain_target = st.text_input("Target/Object ID:", key="chain_target")
+        
+        if st.button("Generate Chain"):
+            actions = []
+            role = ""
+            if chain_type.startswith("Champion"):
+                actions = ['DEMAND_CREATED', 'NUDGE_VALID_BID', 'ACHIEVE_3_5_BIDS', 'RESOLVE_UNMET_DEMAND', 'CLOSURE']
+                role = "Champion"
+            elif chain_type.startswith("Transporter"):
+                actions = ['RETURN_TRIP', 'ACCEPT_BACKHAUL', 'DELIVERY']
+                role = "Transporter"
+            elif chain_type.startswith("Multi"):
+                actions = ['MULTI_PICKUP', 'COMPLETE_BUNDLED_TRIP', 'DELIVERY']
+                role = "Transporter"
+            elif chain_type.startswith("Captain"):
+                actions = ['VERIFY_SIGNUP', 'USER_ACTIVE', 'WORKER_RETAINED']
+                role = "Captain"
+            elif chain_type.startswith("Propagation"):
+                actions = ['REQ_SHARE_SENT', 'REQ_SHARE_OPENED', 'REQ_SHARE_ENGAGED', 'SHARE_CHAIN_FULFILLED']
+                role = "Worker"
+            elif chain_type.startswith("Contractor"):
+                actions = ['POST_REQ', 'RESPOND_FIRST_BID', 'ACCEPT_BID', 'VALIDATE']
+                role = "Contractor"
+                
+            stop_idx = {"Trigger Only": 1, "Response Only": 2, "Completed": len(actions), "Reversed": min(3, len(actions))}[chain_stop.split("(")[0].strip()]
+            
+            for i, act_id in enumerate(actions[:stop_idx]):
+                execute_action(chain_actor, role, act_id, chain_target)
+                
+            if "Reversed" in chain_stop:
+                conn = sqlite3.connect(DB_FILE)
+                last_ev = conn.execute("SELECT Event_ID FROM Event_Stream_Logs WHERE Master_ID = ? ORDER BY Event_ID DESC LIMIT 1", (chain_actor,)).fetchone()
+                conn.close()
+                if last_ev:
+                    progress_event_lifecycle(last_ev[0], 'REVERSED', 'ACTOR_FAULT')
+                    
+            st.success(f"Chain generated: {chain_type} — Stopped at: {chain_stop}")
             
     with col2:
         st.subheader("2. Admin Resolution Desk & Lifecycle Management")
@@ -888,6 +975,242 @@ with tab3:
                 st.rerun()
         else: st.write("No disputes awaiting decision.")
 
+def run_monthly_cycle(target_month, video_threshold, quiz_threshold, referral_threshold, mkt_gate_enabled, mkt_min_actions, t_cap, nat_cap, camp_cap, geo_cap):
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    rule_ver = st.session_state.rule_version
+    
+    workers_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
+    base_date = datetime.datetime.now()
+    
+    for w in workers_list[:5]:
+        for day in range(30):
+            sim_date = base_date - datetime.timedelta(days=day)
+            cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
+            cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
+            cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
+            cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
+        
+        for day in range(15):
+            sim_date = base_date - datetime.timedelta(days=day)
+            cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10, ?)", (w, sim_date, rule_ver))
+            cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
+    
+    now_ts = datetime.datetime.now()
+    captains_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Captain%' OR Primary_Role='Captain'", conn)['Master_ID'].tolist()
+    for c in captains_list:
+        cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Captain', 'VERIFY_SIGNUP', ?, 'SETTLED', 2, ?)", (c, now_ts, rule_ver))
+        cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Captain', 'ACTIVE_CLUSTER', ?, 'SETTLED', 25, ?)", (c, now_ts, rule_ver))
+        cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 27 WHERE Master_ID=? AND Role_Ledger='Captain'", (c,))
+        
+    champions_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Champion%' OR Primary_Role='Champion'", conn)['Master_ID'].tolist()
+    for ch in champions_list:
+        cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Champion', 'DEMAND_CREATED', ?, 'SETTLED', 20, ?)", (ch, now_ts, rule_ver))
+        cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Champion', 'CLOSURE', ?, 'SETTLED', 50, ?)", (ch, now_ts, rule_ver))
+        cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 70 WHERE Master_ID=? AND Role_Ledger='Champion'", (ch,))
+
+    users_df = pd.read_sql_query("""
+        SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, u.Location,
+               u.Has_Subscription, u.Has_Certification, u.Join_Date, u.Join_Month,
+               i.Integrity_Score, i.Action_Status, i.Critical_Flag,
+               m.Rollover_Bonus
+        FROM Global_Users u 
+        JOIN Integrity_Profiles i ON u.Master_ID = i.Master_ID 
+        JOIN Monthly_Qualified_Users m ON u.Master_ID = m.Master_ID
+    """, conn)
+    
+    qualified_pool, disqualified_pool = [], []
+    for _, u in users_df.iterrows():
+        mid, role = u['Master_ID'], u['Primary_Role']
+        
+        if u['Integrity_Score'] < 50 or u['Action_Status'] == 'Block' or u['Critical_Flag']:
+            disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
+            is_qualified = False
+        else:
+            is_qualified = True
+            cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
+            counts = dict(cur.fetchall())
+
+            if role == 'Worker':
+                if counts.get('WORKER_VIDEO_WATCH',0) < video_threshold or counts.get('WORKER_QUIZ_ATTEMPT',0) < quiz_threshold or counts.get('WORKER_REFERRAL',0) < referral_threshold:
+                    is_qualified = False
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_VIDEO_MIN_FAILED'})
+                
+                if mkt_gate_enabled and is_qualified:
+                    mkt_actions = counts.get('SUPPLIER_ADDED', 0) + counts.get('FULFILL_VALIDATED', 0) + counts.get('BUDDY_HELP', 0)
+                    if mkt_actions < mkt_min_actions:
+                        is_qualified = False
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (Marketplace Min)'})
+            
+            elif role == 'Contractor':
+                if counts.get('POST_REQ', 0) < 1:
+                    is_qualified = False
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+            
+            elif role == 'Supplier':
+                if counts.get('PROFILE', 0) < 1 and counts.get('QUOTE', 0) < 1:
+                    is_qualified = False
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+            
+            elif role == 'Transporter':
+                if counts.get('RETURN_TRIP', 0) < 1 and counts.get('DELIVERY', 0) < 1:
+                    is_qualified = False
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                    
+            elif role == 'Captain':
+                if counts.get('VERIFY_SIGNUP', 0) < 1 or (counts.get('ACTIVE_CLUSTER', 0) == 0 and counts.get('HIGH_RETENTION_CLUSTER', 0) == 0):
+                    is_qualified = False
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                    
+            elif role == 'Champion':
+                if counts.get('DEMAND_CREATED', 0) < 1 and counts.get('RESOLVE_UNMET_DEMAND', 0) < 1 and counts.get('CLOSURE', 0) < 1:
+                    is_qualified = False
+                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+
+        if not is_qualified:
+            cur.execute("SELECT Rollover_Bonus FROM Monthly_Qualified_Users WHERE Master_ID = ?", (mid,))
+            prev_rollover_row = cur.fetchone()
+            if prev_rollover_row and float(prev_rollover_row[0]) > 0:
+                cur.execute("INSERT INTO Audit_Trail (Config_Change, Timestamp, Old_Value, New_Value, Reason) VALUES (?, ?, ?, '0', ?)",
+                           (f'ROLLOVER_RESET_{mid}', datetime.datetime.now(), str(prev_rollover_row[0]), 'Requalification failed'))
+            cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
+            continue
+
+        user_join_month = u.get('Join_Month', 1) 
+        sub_eligible_month = user_join_month + 3 
+        if target_month >= sub_eligible_month:
+            has_sub_effective = u['Has_Subscription']
+        else:
+            has_sub_effective = False 
+
+        weights = get_normalized_weights(has_sub_effective, u['Has_Certification'])
+        
+        cur.execute("""
+            SELECT a.Category, COALESCE(SUM(e.Earned_Points), 0)
+            FROM Event_Stream_Logs e
+            JOIN Action_Registry a ON e.Action_ID = a.Action_ID
+            WHERE e.Master_ID = ? AND e.Process_Status = 'SETTLED'
+            GROUP BY a.Category
+        """, (mid,))
+        cat_points = dict(cur.fetchall())
+        
+        habit_pts = cat_points.get('Retention', 0)
+        ref_pts = cat_points.get('Growth', 0) + cat_points.get('Propagation', 0)
+        mkt_pts = sum([cat_points.get(c, 0) for c in ['Trigger', 'Response', 'Completion', 'Quality', 'Efficiency', 'Logistics']])
+        trust_pts = cat_points.get('Trust', 0)
+        
+        w_habit = weights.get('Habit', 0) / 100.0
+        w_ref = weights.get('Referral', 0) / 100.0
+        w_mkt = weights.get('Marketplace', 0) / 100.0
+        w_sub = weights.get('Subscription', 0) / 100.0
+        w_cert = weights.get('Certification', 0) / 100.0
+        
+        base_score = float(habit_pts * (1 + w_habit)) + \
+                     float(ref_pts * (1 + w_ref)) + \
+                     float(mkt_pts * (1 + w_mkt)) + \
+                     float(trust_pts * (1 + w_sub + w_cert))
+
+        qualified_pool.append({
+            'Master_ID': mid, 
+            'Nationality': u['Nationality'], 
+            'Camp': u['Labor_Cluster'], 
+            'Location': u['Location'],
+            'Final_Score': round(base_score + float(u['Rollover_Bonus']), 2)
+        })
+        
+    qualified_pool.sort(key=lambda x: x['Final_Score'], reverse=True)
+    df_past = pd.read_sql_query("SELECT * FROM Past_Winners", conn)
+    
+    winners, rollovers = [], []
+    nat_counts, camp_counts, loc_counts = {}, {}, {}
+    
+    new_cap = t_cap
+    m1_cap, m2_cap, gen_rep_cap = 0, 0, 0
+    if target_month == 3:
+        new_cap = max(1, int(t_cap * 0.8))
+        m1_cap = t_cap - new_cap
+    elif target_month == 4:
+        new_cap = max(1, int(t_cap * 0.8))
+        m1_cap = max(1, int(t_cap * 0.1))
+        m2_cap = t_cap - new_cap - m1_cap
+    elif target_month >= 5:
+        new_cap = max(1, int(t_cap * 0.8))
+        gen_rep_cap = t_cap - new_cap
+        
+    c_new, c_m1, c_m2, c_rep = 0, 0, 0, 0
+
+    for cand in qualified_pool:
+        mid, nat, camp, loc = cand['Master_ID'], cand['Nationality'], cand['Camp'], cand['Location']
+        cand_past_wins = df_past[df_past['Master_ID'] == mid]['Win_Month'].tolist()
+        is_new = len(cand_past_wins) == 0
+        
+        if target_month == 2 and 1 in cand_past_wins:
+            cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'; rollovers.append(cand); continue
+        if target_month >= 5 and (target_month - 1) in cand_past_wins:
+            cand['Reason_Code'] = 'EXACT_REPEAT_COOLDOWN'; rollovers.append(cand); continue
+            
+        cohort_approved = False
+        track_var = ""
+        
+        if is_new:
+            if c_new < new_cap: cohort_approved = True; track_var = "new"
+            else: cand['Reason_Code'] = 'WINNER_CAP_FULL'
+        else:
+            if target_month <= 2: 
+                cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
+            elif target_month == 3:
+                if 1 in cand_past_wins and c_m1 < m1_cap: cohort_approved = True; track_var = "m1"
+                else: cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
+            elif target_month == 4:
+                if 2 in cand_past_wins and 1 not in cand_past_wins and c_m2 < m2_cap: cohort_approved = True; track_var = "m2"
+                elif 1 in cand_past_wins and c_m1 < m1_cap: cohort_approved = True; track_var = "m1"
+                else: cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
+            else:
+                if c_rep < gen_rep_cap: cohort_approved = True; track_var = "rep"
+                else: cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
+                
+        if not cohort_approved:
+            rollovers.append(cand); continue
+            
+        if nat_counts.get(nat, 0) >= nat_cap: 
+            cand['Reason_Code'] = 'NATIONALITY_CAP'; rollovers.append(cand); continue
+        if camp_counts.get(camp, 0) >= camp_cap: 
+            cand['Reason_Code'] = 'CAMP_CAP'; rollovers.append(cand); continue
+        if loc_counts.get(loc, 0) >= geo_cap:
+            cand['Reason_Code'] = 'GEOGRAPHY_CAP'; rollovers.append(cand); continue
+            
+        if len(winners) < t_cap:
+            cand['Reason_Code'] = 'APPROVED'
+            winners.append(cand)
+            nat_counts[nat] = nat_counts.get(nat, 0) + 1
+            camp_counts[camp] = camp_counts.get(camp, 0) + 1
+            loc_counts[loc] = loc_counts.get(loc, 0) + 1
+            
+            if track_var == "new": c_new += 1
+            elif track_var == "m1": c_m1 += 1
+            elif track_var == "m2": c_m2 += 1
+            elif track_var == "rep": c_rep += 1
+            
+            cur.execute("INSERT INTO Past_Winners (Master_ID, Win_Month) VALUES (?, ?)", (mid, target_month))
+            cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
+        else: 
+            cand['Reason_Code'] = 'WINNER_CAP_FULL'; rollovers.append(cand)
+            
+    if st.session_state.rollover_mode:
+        for r in rollovers: 
+            cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = CASE WHEN Rollover_Bonus + 5 > 15 THEN 15 ELSE Rollover_Bonus + 5 END WHERE Master_ID = ?", (r['Master_ID'],))
+    
+    for d in disqualified_pool:
+        cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'DISQUALIFIED', 'NOT_SELECTED', ?, 'RESET')", (target_month, d['Master_ID'], d['Reason']))
+    for w in winners:
+        cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'QUALIFIED', 'WINNER', ?, 'RESET')", (target_month, w['Master_ID'], w.get('Reason_Code', 'APPROVED')))
+    for r in rollovers:
+        cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'QUALIFIED', 'NOT_FUNDED', ?, 'ACCUMULATED')", (target_month, r['Master_ID'], r.get('Reason_Code', 'QUALIFIED_NOT_FUNDED')))
+
+    conn.commit()
+    conn.close()
+    return winners
+
 with tab4:
     st.header("Reward Qualification and Fairness Engine")
     t4_col1, t4_col2 = st.columns(2)
@@ -912,243 +1235,23 @@ with tab4:
         geo_cap = c_cap4.number_input("Max per Location:", min_value=1, max_value=10, value=2)
         
         if st.button("🚀 Run Monthly Engine", type="primary"):
-            conn = sqlite3.connect(DB_FILE)
-            cur = conn.cursor()
-            curr_month = st.session_state.current_simulation_month
-            rule_ver = st.session_state.rule_version
-            
-            workers_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
-            base_date = datetime.datetime.now()
-            
-            for w in workers_list[:5]:
-                for day in range(30):
-                    sim_date = base_date - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                
-                for day in range(15):
-                    sim_date = base_date - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10, ?)", (w, sim_date, rule_ver))
-                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-            
-            now_ts = datetime.datetime.now()
-            captains_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Captain%' OR Primary_Role='Captain'", conn)['Master_ID'].tolist()
-            for c in captains_list:
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Captain', 'VERIFY_SIGNUP', ?, 'SETTLED', 2, ?)", (c, now_ts, rule_ver))
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Captain', 'ACTIVE_CLUSTER', ?, 'SETTLED', 25, ?)", (c, now_ts, rule_ver))
-                cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 27 WHERE Master_ID=? AND Role_Ledger='Captain'", (c,))
-                
-            champions_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Champion%' OR Primary_Role='Champion'", conn)['Master_ID'].tolist()
-            for ch in champions_list:
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Champion', 'DEMAND_CREATED', ?, 'SETTLED', 20, ?)", (ch, now_ts, rule_ver))
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Champion', 'CLOSURE', ?, 'SETTLED', 50, ?)", (ch, now_ts, rule_ver))
-                cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 70 WHERE Master_ID=? AND Role_Ledger='Champion'", (ch,))
-
-            users_df = pd.read_sql_query("""
-                SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, u.Location,
-                       u.Has_Subscription, u.Has_Certification, u.Join_Date, u.Join_Month,
-                       i.Integrity_Score, i.Action_Status, i.Critical_Flag,
-                       m.Rollover_Bonus
-                FROM Global_Users u 
-                JOIN Integrity_Profiles i ON u.Master_ID = i.Master_ID 
-                JOIN Monthly_Qualified_Users m ON u.Master_ID = m.Master_ID
-            """, conn)
-            
-            qualified_pool, disqualified_pool = [], []
-            for _, u in users_df.iterrows():
-                mid, role = u['Master_ID'], u['Primary_Role']
-                
-                if u['Integrity_Score'] < 50 or u['Action_Status'] == 'Block' or u['Critical_Flag']:
-                    disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
-                    is_qualified = False
-                else:
-                    is_qualified = True
-                    cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
-                    counts = dict(cur.fetchall())
-
-                    if role == 'Worker':
-                        if counts.get('WORKER_VIDEO_WATCH',0) < video_threshold or counts.get('WORKER_QUIZ_ATTEMPT',0) < quiz_threshold or counts.get('WORKER_REFERRAL',0) < referral_threshold:
-                            is_qualified = False
-                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_VIDEO_MIN_FAILED'})
-                        
-                        if mkt_gate_enabled and is_qualified:
-                            mkt_actions = counts.get('SUPPLIER_ADDED', 0) + counts.get('FULFILL_VALIDATED', 0) + counts.get('BUDDY_HELP', 0)
-                            if mkt_actions < mkt_min_actions:
-                                is_qualified = False
-                                disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (Marketplace Min)'})
-                    
-                    elif role == 'Contractor':
-                        if counts.get('POST_REQ', 0) < 1:
-                            is_qualified = False
-                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-                    
-                    elif role == 'Supplier':
-                        if counts.get('PROFILE', 0) < 1 and counts.get('QUOTE', 0) < 1:
-                            is_qualified = False
-                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-                    
-                    elif role == 'Transporter':
-                        if counts.get('RETURN_TRIP', 0) < 1 and counts.get('DELIVERY', 0) < 1:
-                            is_qualified = False
-                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-                            
-                    elif role == 'Captain':
-                        if counts.get('VERIFY_SIGNUP', 0) < 1 or (counts.get('ACTIVE_CLUSTER', 0) == 0 and counts.get('HIGH_RETENTION_CLUSTER', 0) == 0):
-                            is_qualified = False
-                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-                            
-                    elif role == 'Champion':
-                        if counts.get('DEMAND_CREATED', 0) < 1 and counts.get('RESOLVE_UNMET_DEMAND', 0) < 1 and counts.get('CLOSURE', 0) < 1:
-                            is_qualified = False
-                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-
-                if not is_qualified:
-                    cur.execute("SELECT Rollover_Bonus FROM Monthly_Qualified_Users WHERE Master_ID = ?", (mid,))
-                    prev_rollover_row = cur.fetchone()
-                    if prev_rollover_row and float(prev_rollover_row[0]) > 0:
-                        cur.execute("INSERT INTO Audit_Trail (Config_Change, Timestamp, Old_Value, New_Value, Reason) VALUES (?, ?, ?, '0', ?)",
-                                   (f'ROLLOVER_RESET_{mid}', datetime.datetime.now(), str(prev_rollover_row[0]), 'Requalification failed'))
-                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
-                    continue
-
-                user_join_month = u.get('Join_Month', 1) 
-                sub_eligible_month = user_join_month + 3 
-                if curr_month >= sub_eligible_month:
-                    has_sub_effective = u['Has_Subscription']
-                else:
-                    has_sub_effective = False 
-
-                weights = get_normalized_weights(has_sub_effective, u['Has_Certification'])
-                
-                cur.execute("""
-                    SELECT a.Category, COALESCE(SUM(e.Earned_Points), 0)
-                    FROM Event_Stream_Logs e
-                    JOIN Action_Registry a ON e.Action_ID = a.Action_ID
-                    WHERE e.Master_ID = ? AND e.Process_Status = 'SETTLED'
-                    GROUP BY a.Category
-                """, (mid,))
-                cat_points = dict(cur.fetchall())
-                
-                habit_pts = cat_points.get('Retention', 0)
-                ref_pts = cat_points.get('Growth', 0) + cat_points.get('Propagation', 0)
-                mkt_pts = sum([cat_points.get(c, 0) for c in ['Trigger', 'Response', 'Completion', 'Quality', 'Efficiency', 'Logistics']])
-                trust_pts = cat_points.get('Trust', 0)
-                
-                w_habit = weights.get('Habit', 0) / 100.0
-                w_ref = weights.get('Referral', 0) / 100.0
-                w_mkt = weights.get('Marketplace', 0) / 100.0
-                w_sub = weights.get('Subscription', 0) / 100.0
-                w_cert = weights.get('Certification', 0) / 100.0
-                
-                base_score = float(habit_pts * (1 + w_habit)) + \
-                             float(ref_pts * (1 + w_ref)) + \
-                             float(mkt_pts * (1 + w_mkt)) + \
-                             float(trust_pts * (1 + w_sub + w_cert))
-
-                qualified_pool.append({
-                    'Master_ID': mid, 
-                    'Nationality': u['Nationality'], 
-                    'Camp': u['Labor_Cluster'], 
-                    'Location': u['Location'],
-                    'Final_Score': round(base_score + float(u['Rollover_Bonus']), 2)
-                })
-                
-            qualified_pool.sort(key=lambda x: x['Final_Score'], reverse=True)
-            df_past = pd.read_sql_query("SELECT * FROM Past_Winners", conn)
-            
-            winners, rollovers = [], []
-            nat_counts, camp_counts, loc_counts = {}, {}, {}
-            
-            new_cap = t_cap
-            m1_cap, m2_cap, gen_rep_cap = 0, 0, 0
-            if curr_month == 3:
-                new_cap = max(1, int(t_cap * 0.8))
-                m1_cap = t_cap - new_cap
-            elif curr_month == 4:
-                new_cap = max(1, int(t_cap * 0.8))
-                m1_cap = max(1, int(t_cap * 0.1))
-                m2_cap = t_cap - new_cap - m1_cap
-            elif curr_month >= 5:
-                new_cap = max(1, int(t_cap * 0.8))
-                gen_rep_cap = t_cap - new_cap
-                
-            c_new, c_m1, c_m2, c_rep = 0, 0, 0, 0
-
-            for cand in qualified_pool:
-                mid, nat, camp, loc = cand['Master_ID'], cand['Nationality'], cand['Camp'], cand['Location']
-                cand_past_wins = df_past[df_past['Master_ID'] == mid]['Win_Month'].tolist()
-                is_new = len(cand_past_wins) == 0
-                
-                if curr_month == 2 and 1 in cand_past_wins:
-                    cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'; rollovers.append(cand); continue
-                if curr_month >= 5 and (curr_month - 1) in cand_past_wins:
-                    cand['Reason_Code'] = 'EXACT_REPEAT_COOLDOWN'; rollovers.append(cand); continue
-                    
-                cohort_approved = False
-                track_var = ""
-                
-                if is_new:
-                    if c_new < new_cap: cohort_approved = True; track_var = "new"
-                    else: cand['Reason_Code'] = 'WINNER_CAP_FULL'
-                else:
-                    if curr_month <= 2: 
-                        cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
-                    elif curr_month == 3:
-                        if 1 in cand_past_wins and c_m1 < m1_cap: cohort_approved = True; track_var = "m1"
-                        else: cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
-                    elif curr_month == 4:
-                        if 2 in cand_past_wins and 1 not in cand_past_wins and c_m2 < m2_cap: cohort_approved = True; track_var = "m2"
-                        elif 1 in cand_past_wins and c_m1 < m1_cap: cohort_approved = True; track_var = "m1"
-                        else: cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
-                    else:
-                        if c_rep < gen_rep_cap: cohort_approved = True; track_var = "rep"
-                        else: cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
-                        
-                if not cohort_approved:
-                    rollovers.append(cand); continue
-                    
-                if nat_counts.get(nat, 0) >= nat_cap: 
-                    cand['Reason_Code'] = 'NATIONALITY_CAP'; rollovers.append(cand); continue
-                if camp_counts.get(camp, 0) >= camp_cap: 
-                    cand['Reason_Code'] = 'CAMP_CAP'; rollovers.append(cand); continue
-                if loc_counts.get(loc, 0) >= geo_cap:
-                    cand['Reason_Code'] = 'GEOGRAPHY_CAP'; rollovers.append(cand); continue
-                    
-                if len(winners) < t_cap:
-                    cand['Reason_Code'] = 'APPROVED'
-                    winners.append(cand)
-                    nat_counts[nat] = nat_counts.get(nat, 0) + 1
-                    camp_counts[camp] = camp_counts.get(camp, 0) + 1
-                    loc_counts[loc] = loc_counts.get(loc, 0) + 1
-                    
-                    if track_var == "new": c_new += 1
-                    elif track_var == "m1": c_m1 += 1
-                    elif track_var == "m2": c_m2 += 1
-                    elif track_var == "rep": c_rep += 1
-                    
-                    cur.execute("INSERT INTO Past_Winners (Master_ID, Win_Month) VALUES (?, ?)", (mid, curr_month))
-                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
-                else: 
-                    cand['Reason_Code'] = 'WINNER_CAP_FULL'; rollovers.append(cand)
-                    
-            if st.session_state.rollover_mode:
-                for r in rollovers: 
-                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = CASE WHEN Rollover_Bonus + 5 > 15 THEN 15 ELSE Rollover_Bonus + 5 END WHERE Master_ID = ?", (r['Master_ID'],))
-            
-            for d in disqualified_pool:
-                cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'DISQUALIFIED', 'NOT_SELECTED', ?, 'RESET')", (curr_month, d['Master_ID'], d['Reason']))
-            for w in winners:
-                cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'QUALIFIED', 'WINNER', ?, 'RESET')", (curr_month, w['Master_ID'], w.get('Reason_Code', 'APPROVED')))
-            for r in rollovers:
-                cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'QUALIFIED', 'NOT_FUNDED', ?, 'ACCUMULATED')", (curr_month, r['Master_ID'], r.get('Reason_Code', 'QUALIFIED_NOT_FUNDED')))
-
-            conn.commit()
-            conn.close()
+            winners = run_monthly_cycle(st.session_state.current_simulation_month, video_threshold, quiz_threshold, referral_threshold, mkt_gate_enabled, mkt_min_actions, t_cap, nat_cap, camp_cap, geo_cap)
             st.session_state.current_simulation_month += 1
             st.success(f"Month completed! Winners: {len(winners)}")
             if winners: st.dataframe(pd.DataFrame(winners)[['Master_ID', 'Nationality', 'Camp', 'Location', 'Final_Score', 'Reason_Code']], use_container_width=True)
+
+        # --- BÖLÜM 8.3: MULTI-MONTH AUTO-RUNNER ---
+        st.markdown("---")
+        st.subheader("📅 Multi-Month Auto-Runner")
+        run_months = st.slider("Run Months:", 1, 13, 6)
+        
+        if st.button(f"🚀 Auto-Run {run_months} Months"):
+            progress_bar = st.progress(0)
+            for month in range(run_months):
+                run_monthly_cycle(st.session_state.current_simulation_month, video_threshold, quiz_threshold, referral_threshold, mkt_gate_enabled, mkt_min_actions, t_cap, nat_cap, camp_cap, geo_cap)
+                st.session_state.current_simulation_month += 1
+                progress_bar.progress((month + 1) / run_months)
+            st.success(f"Completed {run_months} month simulation! Currently at month {st.session_state.current_simulation_month}")
 
     with t4_col2:
         st.markdown("### 🌟 Mega Rewards Engine")
@@ -1191,30 +1294,45 @@ with tab4:
                 company_val = cur.fetchone()[0]
                 is_sponsored = company_val is not None and company_val != ""
                 
+                cur.execute("SELECT Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
+                i_score, i_status, c_flag = cur.fetchone()
+                
                 if not w['EID_Verified']: fail_reason = 'MEGA_EID_FAILED'
                 elif m_cert and not w['Has_Certification']: fail_reason = 'MEGA_CERT_FAILED'
                 elif not is_sponsored and w['Continuous_Paid_Months'] < req_months: fail_reason = 'MEGA_SUBSCRIPTION_FAILED'
+                elif i_score < 50 or i_status == 'Block' or c_flag: fail_reason = 'MEGA_INTEGRITY_FAILED'
                 else:
-                    cur.execute("SELECT Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
-                    i_score, i_status, c_flag = cur.fetchone()
-                    if i_score < 50 or i_status == 'Block' or c_flag: fail_reason = 'MEGA_INTEGRITY_FAILED'
-                
-                if not fail_reason and m_excl:
-                    cur.execute("SELECT COUNT(*) FROM Past_Winners WHERE Master_ID=?", (mid,))
-                    if cur.fetchone()[0] > 0: fail_reason = 'MEGA_MONTHLY_WINNER_EXCLUDED'
-                        
-                if not fail_reason:
-                    cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
-                    counts = dict(cur.fetchall())
-                    for req_a, req_t in MEGA_TARGETS.items():
-                        if counts.get(req_a, 0) < req_t: fail_reason = 'MEGA_COUNTS_FAILED'; break
+                    if m_excl:
+                        cur.execute("SELECT COUNT(*) FROM Past_Winners WHERE Master_ID=?", (mid,))
+                        if cur.fetchone()[0] > 0: fail_reason = 'MEGA_MONTHLY_WINNER_EXCLUDED'
                             
+                    if not fail_reason:
+                        cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
+                        counts = dict(cur.fetchall())
+                        for req_a, req_t in MEGA_TARGETS.items():
+                            if counts.get(req_a, 0) < req_t: fail_reason = 'MEGA_COUNTS_FAILED'; break
+
+                # --- BÖLÜM 7.3: MEGA ELIGIBILITY CRITERION-BY-CRITERION ---
+                criteria_results = {
+                    'Master_ID': mid,
+                    'EID_Verified': bool(w['EID_Verified']),
+                    'Certification': bool(w['Has_Certification']) if m_cert else 'N/A',
+                    'Subscription_Months': int(w['Continuous_Paid_Months']),
+                    'Required_Months': req_months,
+                    'Subscription_Pass': int(w['Continuous_Paid_Months']) >= req_months,
+                    'Integrity_Score': i_score,
+                    'Monthly_Winner_Excluded': fail_reason == 'MEGA_MONTHLY_WINNER_EXCLUDED'
+                }
+                
                 if fail_reason: 
-                    mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
+                    criteria_results['Reason_Code'] = fail_reason
+                    mega_failed.append(criteria_results)
                 else: 
                     cur.execute("SELECT COALESCE(SUM(Earned_Points), 0) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status='SETTLED'", (mid,))
                     base_mega_score = cur.fetchone()[0]
-                    mega_qualified.append({'Master_ID': mid, 'Mega_Score': float(base_mega_score), 'Reason_Code': 'MEGA_APPROVED'})
+                    criteria_results['Mega_Score'] = float(base_mega_score)
+                    criteria_results['Reason_Code'] = 'MEGA_APPROVED'
+                    mega_qualified.append(criteria_results)
             
             mega_qualified.sort(key=lambda x: x['Mega_Score'], reverse=True)
             
@@ -1256,10 +1374,6 @@ with tab4:
             
         if 'pending_mega_winners' in st.session_state and st.session_state['pending_mega_winners']:
             if st.button("✅ Approve Mega Winners (Final Admin)", key="mega_approve"):
-                # Role check based on general role setting (from Tab 5)
-                # However, for simplicity across tabs, we allow final check if role matches Final Authorised Admin
-                # Since role is selected on Tab 5, we read it from there in next run or trust admin here.
-                # Assuming current user knows the role requirement.
                 conn = sqlite3.connect(DB_FILE)
                 for w in st.session_state['pending_mega_winners']:
                     conn.execute("INSERT INTO Past_Winners (Master_ID, Win_Month) VALUES (?, ?)", (w['Master_ID'], -mega_cycle)) 
@@ -1316,18 +1430,29 @@ with tab5:
         if st.button("Request Budget Increase (FIN-016)"):
             st.error("Budget increases require maker-checker approval workflow. Cannot be automatic.")
         
-    net_revenue_calc = collected_rev + sponsor_funding
-    net_contribution = net_revenue_calc - var_costs - refunds - gateway_costs - fulfillment_costs
+    # --- BÖLÜM 9.1: DECIMAL ARITHMETIC ENFORCEMENT ---
+    collected_rev_d = safe_money(collected_rev)
+    sponsor_funding_d = safe_money(sponsor_funding)
+    var_costs_d = safe_money(var_costs)
+    refunds_d = safe_money(refunds)
+    gateway_costs_d = safe_money(gateway_costs)
+    fulfillment_costs_d = safe_money(fulfillment_costs)
+    
+    net_revenue_calc = collected_rev_d + sponsor_funding_d
+    net_contribution = net_revenue_calc - var_costs_d - refunds_d - gateway_costs_d - fulfillment_costs_d
+    
+    fixed_floor_d = safe_money(fixed_floor)
+    profit_margin_d = safe_money(profit_margin)
     
     if profit_mode == "Fixed":
-        req_profit = fixed_floor
+        req_profit = fixed_floor_d
     elif profit_mode == "Percentage":
-        req_profit = (profit_margin / 100.0) * net_revenue_calc
+        req_profit = (profit_margin_d / Decimal('100')) * net_revenue_calc
     else:
-        req_profit = max(fixed_floor, (profit_margin / 100.0) * net_revenue_calc)
+        req_profit = max(fixed_floor_d, (profit_margin_d / Decimal('100')) * net_revenue_calc)
         
-    max_affordable = max(0, net_contribution - mega_prov - req_profit - refund_reserve)
-    approved_pool = min(budget_ceil, max_affordable, policy_limit)
+    max_affordable = max(Decimal('0'), net_contribution - safe_money(mega_prov) - req_profit - safe_money(refund_reserve))
+    approved_pool = min(safe_money(budget_ceil), max_affordable, safe_money(policy_limit))
     
     with f_col3:
         st.subheader("Calculated Pools")
@@ -1385,10 +1510,10 @@ with tab5:
     if tier_costs["T1"]["face"] < min_reward_value: st.error(f"FIN-008: Tier 1 face value ({tier_costs['T1']['face']}) below minimum ({min_reward_value})")
     if tier_costs["T4"]["face"] > max_reward_value: st.error(f"FIN-009: Tier 4 face value ({tier_costs['T4']['face']}) exceeds maximum ({max_reward_value})")
 
-    t1_b = approved_pool * alloc["T1"]
-    t2_b = approved_pool * alloc["T2"]
-    t3_b = approved_pool * alloc["T3"]
-    t4_b = approved_pool * alloc["T4"]
+    t1_b = float(approved_pool) * alloc["T1"]
+    t2_b = float(approved_pool) * alloc["T2"]
+    t3_b = float(approved_pool) * alloc["T3"]
+    t4_b = float(approved_pool) * alloc["T4"]
     
     t1_count = int(t1_b / (tier_costs["T1"]["actual"] * redemption_rate)) if tier_costs["T1"]["actual"] > 0 else 0
     t2_count = int(t2_b / (tier_costs["T2"]["actual"] * redemption_rate)) if tier_costs["T2"]["actual"] > 0 else 0
@@ -1432,8 +1557,8 @@ with tab5:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (st.session_state.current_simulation_month, selected_strat, input_data,
               total_funded_winners, 0, 0, total_face_value, total_actual_cost,
-              net_contribution - approved_pool, 
-              ((net_contribution - approved_pool) / net_revenue_calc * 100) if net_revenue_calc > 0 else 0,
+              float(net_contribution - approved_pool), 
+              float(((net_contribution - approved_pool) / net_revenue_calc * 100)) if net_revenue_calc > 0 else 0,
               ""))
         conn.commit(); conn.close()
         st.success("Scenario saved to database!")
@@ -1482,9 +1607,9 @@ with tab5:
         errors = []
         
         if not is_tier_valid: valid = False; errors.append("ECON-006: Tier percentages inconsistent.")
-        if approved_pool > budget_ceil: valid = False; errors.append("ECON-001: Approved pool exceeds budget ceiling.")
-        if approved_pool > max_affordable: valid = False; errors.append("ECON-002: Approved pool exceeds max affordable pool.")
-        if req_profit < fixed_floor and profit_mode != "Fixed": errors.append("ECON-003: Projected profit < required floor (Warning).")
+        if float(approved_pool) > budget_ceil: valid = False; errors.append("ECON-001: Approved pool exceeds budget ceiling.")
+        if float(approved_pool) > float(max_affordable): valid = False; errors.append("ECON-002: Approved pool exceeds max affordable pool.")
+        if float(req_profit) < fixed_floor and profit_mode != "Fixed": errors.append("ECON-003: Projected profit < required floor (Warning).")
             
         if admin_role == "QA / Auditor":
             st.warning("QA / Auditor has read-only access. Cannot execute transitions.")
@@ -1494,9 +1619,9 @@ with tab5:
             if st.session_state.cycle_status == "DRAFT":
                 if valid and st.button("Lock Snapshot & Move to SIMULATED"):
                     config_data = json.dumps({
-                        "collected_rev": collected_rev, "budget_ceil": budget_ceil,
-                        "profit_margin": profit_margin, "fixed_floor": fixed_floor,
-                        "approved_pool": approved_pool, "rule_version": st.session_state.rule_version
+                        "collected_rev": float(collected_rev), "budget_ceil": float(budget_ceil),
+                        "profit_margin": float(profit_margin), "fixed_floor": float(fixed_floor),
+                        "approved_pool": float(approved_pool), "rule_version": st.session_state.rule_version
                     })
                     config_hash = hashlib.md5(config_data.encode()).hexdigest()
                     conn = sqlite3.connect(DB_FILE)
@@ -1506,9 +1631,9 @@ with tab5:
                          Profit_Margin_Pct, Fixed_Profit_Floor, Mega_Provision, Max_Affordable_Pool, 
                          Approved_Reward_Pool, Rule_Version, Config_Hash, Created_By)
                         VALUES (?, 'SIMULATED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (st.session_state.current_simulation_month, collected_rev, 
-                          sponsor_funding, var_costs, budget_ceil, profit_margin, fixed_floor, mega_prov,
-                          max_affordable, approved_pool, st.session_state.rule_version, 
+                    """, (st.session_state.current_simulation_month, float(collected_rev), 
+                          float(sponsor_funding), float(var_costs), float(budget_ceil), float(profit_margin), float(fixed_floor), float(mega_prov),
+                          float(max_affordable), float(approved_pool), st.session_state.rule_version, 
                           config_hash, admin_role))
                     
                     conn.execute("""
@@ -1632,7 +1757,22 @@ with tab7:
                 ORDER BY e.Master_ID
             """, conn)
         elif op_rep.startswith("3."):
-            df_report = pd.read_sql_query("SELECT Acting_Role, COUNT(*) as Total_Actions, SUM(Earned_Points) as Total_Points_Earned FROM Event_Stream_Logs GROUP BY Acting_Role", conn)
+            # --- BÖLÜM 7.2: ACTOR KPI REPORT (ROLE-SPECIFIC METRICS) ---
+            df_report = pd.read_sql_query("""
+                SELECT 
+                    e.Acting_Role,
+                    e.Action_ID,
+                    COUNT(*) as Total_Attempts,
+                    SUM(CASE WHEN e.Process_Status = 'SETTLED' THEN 1 ELSE 0 END) as Settled_Count,
+                    SUM(CASE WHEN e.Process_Status = 'REVERSED' THEN 1 ELSE 0 END) as Reversed_Count,
+                    SUM(CASE WHEN e.Process_Status = 'SETTLED' THEN e.Earned_Points ELSE 0 END) as Total_Points,
+                    ROUND(AVG(CASE WHEN e.Process_Status = 'SETTLED' THEN e.Earned_Points ELSE NULL END), 2) as Avg_Points_Per_Action,
+                    SUM(CASE WHEN e.Cap_Cooldown_Result = 'CAPPED' THEN 1 ELSE 0 END) as Times_Capped
+                FROM Event_Stream_Logs e
+                WHERE e.Acting_Role != 'System' AND e.Acting_Role != 'Admin'
+                GROUP BY e.Acting_Role, e.Action_ID
+                ORDER BY e.Acting_Role, Total_Points DESC
+            """, conn)
         elif op_rep.startswith("4."):
             df_report = pd.read_sql_query("SELECT Master_ID, Total_Score, Rollover_Bonus FROM Monthly_Qualified_Users", conn)
         elif op_rep.startswith("5."):
@@ -1674,6 +1814,9 @@ with tab7:
             
     if not df_report.empty:
         st.dataframe(df_report, use_container_width=True)
-        st.download_button(label="📥 Export to CSV", data=convert_df_to_csv(df_report), file_name="report.csv", mime='text/csv')
+        # --- BÖLÜM 8.4: EXPORT TO XLSX / CSV ---
+        exp_col1, exp_col2, exp_col3 = st.columns(3)
+        exp_col1.download_button("📥 CSV", convert_df_to_csv(df_report), "report.csv", "text/csv")
+        exp_col2.download_button("📥 XLSX", convert_df_to_xlsx(df_report), "report.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             
     conn.close()
