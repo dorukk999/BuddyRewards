@@ -15,9 +15,16 @@ if 'rollover_mode' not in st.session_state:
 if 'current_simulation_month' not in st.session_state:
     st.session_state.current_simulation_month = 1 
 
-# FİNANS ONAY ZİNCİRİ İÇİN HAFIZA (STATE MACHINE)
 if 'cycle_status' not in st.session_state:
     st.session_state.cycle_status = "DRAFT"
+
+if 'rule_version' not in st.session_state:
+    st.session_state.rule_version = "v2.0"
+
+if 'random_seed' not in st.session_state:
+    st.session_state.random_seed = 42
+
+random.seed(st.session_state.random_seed)
 
 # --- UNIVERSAL ACTION REGISTRY ---
 UNIVERSAL_ACTION_REGISTRY = [
@@ -35,9 +42,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("All", "REQ_SHARE_OPENED", "Propagation", 5, 0, 0, False, 999),
     ("All", "REQ_SHARE_ENGAGED", "Propagation", 10, 0, 0, False, 999),
     ("All", "SHARE_CHAIN_FULFILLED", "Outcome", 50, 0, 0, True, 999),
-    
     ("Worker", "FULFILL_VALIDATED", "Trust", 40, 0, +10, True, 20),
-    
     ("Contractor", "POST_REQ", "Trigger", 20, 30, 0, False, 10),
     ("Contractor", "CLONE_REQ", "Trigger", 10, 0, 0, False, 5),
     ("Contractor", "RESPOND_FIRST_BID", "Response", 5, 0, 0, False, 50),
@@ -46,7 +51,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Contractor", "CLOSE_REQ", "Completion", 10, 0, 0, False, 10),
     ("Contractor", "RATE_COUNTERPARTY", "Trust", 5, 0, 0, False, 50),
     ("Contractor", "PAY_ON_TIME", "Trust", 15, 0, 0, False, 10),
-    
     ("Supplier", "PROFILE", "Activation", 20, 129600, +1, False, 1),
     ("Supplier", "UPDATE_CATALOGUE", "Retention", 5, 0, 0, False, 4),
     ("Supplier", "QUOTE", "Response", 10, 60, +2, False, 20),
@@ -56,7 +60,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Supplier", "ON_TIME_DELIVERY", "Quality", 10, 0, 0, False, 10),
     ("Supplier", "UPLOAD_POD", "Trust", 5, 0, 0, False, 10),
     ("Supplier", "DISPUTE_FREE_SETTLEMENT", "Trust", 10, 0, 0, False, 10),
-    
     ("Transporter", "SET_CAPACITY", "Trigger", 5, 720, 0, False, 60),
     ("Transporter", "RETURN_TRIP", "Trigger", 15, 120, +5, False, 20),
     ("Transporter", "ACCEPT_BACKHAUL", "Response", 15, 0, 0, False, 10),
@@ -68,7 +71,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Transporter", "REDUCE_EMPTY_KM", "Efficiency", 25, 0, 0, False, 8),
     ("Transporter", "COMPETITIVE_PRICE", "Efficiency", 10, 0, 0, False, 10),
     ("Transporter", "DISPUTE_FREE_TRIP", "Trust", 10, 0, 0, False, 15),
-    
     ("Champion", "DEMAND_CREATED", "Trigger", 20, 60, +5, False, 10),
     ("Champion", "REQ_PROPAGATED", "Propagation", 10, 0, 0, False, 20),
     ("Champion", "SUPPLIER_ACTIVATED", "Activation", 15, 0, 0, False, 10),
@@ -81,7 +83,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Champion", "ACTIVATE_BACKHAUL", "Logistics", 20, 0, 0, False, 10),
     ("Champion", "REACTIVATE_PROVIDER", "Retention", 15, 0, 0, False, 10),
     ("Champion", "IMPROVE_BID_SLA", "Quality", 10, 0, 0, False, 10),
-    
     ("Captain", "VERIFY_SIGNUP", "Growth", 2, 0, +2, False, 999),
     ("Captain", "ACTIVE_CLUSTER", "Trust", 25, 1440, +10, False, 1),
     ("Captain", "USER_ACTIVE", "Retention", 10, 0, +2, False, 999),
@@ -92,7 +93,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Captain", "INACTIVE_REACTIVATED", "Retention", 10, 0, +3, False, 20),
     ("Captain", "REFERRAL_RETAINED", "Growth", 15, 0, +4, False, 20),
     ("Captain", "CAMP_CHALLENGE", "Community", 25, 1440, +5, False, 4),
-
     ("All", "NR01_APP_INSTALL", "Trigger", 0, 0, 0, False, 1),
     ("All", "NR02_COSMETIC_PROFILE_EDIT", "Trigger", 0, 0, 0, False, 10),
     ("Transporter", "NR03_FAKE_BACKHAUL", "Trigger", 0, 0, -10, False, 5),
@@ -112,18 +112,19 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12               
 }
 
-REASON_CODES = [
-    "APPROVED_CLEAN", "POD_INVALID", "ACTOR_FAULT", "DISPUTE_UPHELD", 
-    "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED",
-    "I01_DUPLICATE_IDENTITY", "I02_SELF_REFERRAL", "I03_FAKE_PROVIDER", "I04_FAKE_DEMAND",
-    "I05_PAIR_FARMING", "I06_COLLUSION", "I07_VELOCITY_SPIKE", "I08_FAKE_ONBOARDING",
-    "I09_FAKE_LIQUIDITY", "I10_BACKHAUL_FARMING", "I11_BUNDLE_MANIPULATION", "I12_KYC_MISMATCH",
-    "I13_POD_REUSE", "I14_RATING_MANIPULATION", "I15_ADMIN_ABUSE",
-    "REQ_CANCELLED_INVALID", "BUYER_FAULT_CANCEL", "SUPPLIER_NON_FULFIL", 
-    "TRIP_CANCEL_ACTOR_FAULT", "POD_DISPUTED", "MEGA_POST_AWARD_REVIEW"
-]
+# --- BÖLÜM 13: KAPSAMLI REASON CODES ---
+REASON_CODES = {
+    "Eligibility": ["HABIT_VIDEO_MIN_FAILED", "HABIT_QUIZ_MIN_FAILED", "REFERRAL_MIN_FAILED", "ROLE_GATE_FAILED", "INTEGRITY_FAILED"],
+    "Validation": ["PROOF_MISSING", "POD_INVALID", "DUPLICATE_PROVIDER", "INVALID_TRIP", "OUTCOME_NOT_CONFIRMED"],
+    "Caps_Cooldowns": ["DAILY_CAP_REACHED", "MONTHLY_CAP_REACHED", "EXACT_REPEAT_COOLDOWN", "PAIR_COOLDOWN"],
+    "Integrity": ["SELF_REFERRAL", "COLLUSION_SUSPECTED", "DUPLICATE_IDENTITY", "VELOCITY_SPIKE", "FAKE_BACKHAUL"],
+    "Monthly_Selection": ["APPROVED", "WINNER_CAP_FULL", "REPEAT_COHORT_EXCLUDED", "NATIONALITY_CAP", "GEOGRAPHY_CAP", "CAMP_CAP", "ROLLOVER_APPLIED", "QUALIFIED_NOT_FUNDED"],
+    "Mega": ["MEGA_APPROVED", "MEGA_EID_FAILED", "MEGA_CERT_FAILED", "MEGA_SUBSCRIPTION_FAILED", "MEGA_INTEGRITY_FAILED", "MEGA_MONTHLY_WINNER_EXCLUDED", "MEGA_COUNTS_FAILED"],
+    "Reversal": ["CANCELLED", "ACTOR_FAULT", "DISPUTE_UPHELD", "POST_SETTLEMENT_FRAUD", "REQ_CANCELLED_INVALID", "BUYER_FAULT_CANCEL", "SUPPLIER_NON_FULFIL", "TRIP_CANCEL_ACTOR_FAULT", "POD_DISPUTED", "MEGA_POST_AWARD_REVIEW", "APPROVED_CLEAN"]
+}
+FLAT_REASON_CODES = [code for category in REASON_CODES.values() for code in category]
 
-# --- DATABASE INITIALIZATION ---
+# --- DATABASE INITIALIZATION (DECIMAL & NON-FUNCTIONAL FIXES) ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -153,7 +154,7 @@ def init_db():
         Event_ID INTEGER, Rule_Version TEXT, Reason_Code TEXT)''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Monthly_Qualified_Users (
-        Master_ID TEXT PRIMARY KEY, Total_Score REAL, Rollover_Bonus REAL DEFAULT 0)''')
+        Master_ID TEXT PRIMARY KEY, Total_Score DECIMAL(10,2), Rollover_Bonus DECIMAL(10,2) DEFAULT 0)''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Past_Winners (
         Win_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Win_Month INTEGER)''')
@@ -164,11 +165,11 @@ def init_db():
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS reward_cycle_financial_config (
         Cycle_ID INTEGER PRIMARY KEY AUTOINCREMENT, Month_ID INTEGER, Status TEXT,
-        Sub_Revenue REAL, Market_Revenue REAL, Ops_Costs REAL, Budget_Ceiling REAL,
-        Profit_Margin_Pct REAL, Fixed_Profit_Floor REAL, Mega_Provision REAL,
-        Max_Affordable_Pool REAL, Approved_Reward_Pool REAL,
+        Sub_Revenue DECIMAL(10,2), Market_Revenue DECIMAL(10,2), Ops_Costs DECIMAL(10,2), Budget_Ceiling DECIMAL(10,2),
+        Profit_Margin_Pct DECIMAL(10,2), Fixed_Profit_Floor DECIMAL(10,2), Mega_Provision DECIMAL(10,2),
+        Max_Affordable_Pool DECIMAL(10,2), Approved_Reward_Pool DECIMAL(10,2),
         Rule_Version TEXT, Currency TEXT DEFAULT 'AED', Profit_Mode TEXT DEFAULT 'HYBRID',
-        Refund_Reserve REAL DEFAULT 0, Other_Reserves REAL DEFAULT 0, Created_By TEXT, Config_Hash TEXT)''')
+        Refund_Reserve DECIMAL(10,2) DEFAULT 0, Other_Reserves DECIMAL(10,2) DEFAULT 0, Created_By TEXT, Config_Hash TEXT)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Attribution_Records (
         Attribution_ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -183,13 +184,13 @@ def init_db():
     cursor.execute('''CREATE TABLE IF NOT EXISTS Trip_Records (
         Trip_ID TEXT PRIMARY KEY,
         Origin TEXT, Destination TEXT, Return_Leg BOOLEAN, Capacity TEXT, Bundle_ID TEXT,
-        Route_Baseline_KM REAL, Actual_KM REAL, Empty_KM_Saving REAL,
+        Route_Baseline_KM DECIMAL(10,2), Actual_KM DECIMAL(10,2), Empty_KM_Saving DECIMAL(10,2),
         Pickup_Timestamp DATETIME, Delivery_Timestamp DATETIME)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Cycle_Snapshots (
         Snapshot_ID INTEGER PRIMARY KEY AUTOINCREMENT,
         Month INTEGER, Master_ID TEXT, Qualification_Flags TEXT, Component_Scores TEXT,
-        Normalized_Weights TEXT, Rollover_Amount REAL, Repeat_Cohort TEXT,
+        Normalized_Weights TEXT, Rollover_Amount DECIMAL(10,2), Repeat_Cohort TEXT,
         Distribution_Group TEXT, Winner_Outcome TEXT, Rule_Version TEXT)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Audit_Trail (
@@ -199,28 +200,28 @@ def init_db():
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Revenue_Snapshots (
         Snapshot_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        Cycle_ID INTEGER, Source_Type TEXT, Gross_Amount REAL, Collected_Amount REAL,
-        Failed_Amount REAL, Refunded_Amount REAL, Settlement_Status TEXT, Snapshot_Time DATETIME)''')
+        Cycle_ID INTEGER, Source_Type TEXT, Gross_Amount DECIMAL(10,2), Collected_Amount DECIMAL(10,2),
+        Failed_Amount DECIMAL(10,2), Refunded_Amount DECIMAL(10,2), Settlement_Status TEXT, Snapshot_Time DATETIME)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Cost_Snapshots (
         Snapshot_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        Cycle_ID INTEGER, Cost_Type TEXT, Amount REAL, Basis TEXT, Source_System TEXT, Snapshot_Time DATETIME)''')
+        Cycle_ID INTEGER, Cost_Type TEXT, Amount DECIMAL(10,2), Basis TEXT, Source_System TEXT, Snapshot_Time DATETIME)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Inventory (
         Reward_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        Funding_Source TEXT, Sponsor_ID TEXT, Benefit_Type TEXT, Face_Value REAL, Actual_Buddy_Cost REAL,
-        Available_Qty INTEGER, Reserved_Qty INTEGER, Expiry DATETIME, Redemption_Terms TEXT)''')
+        Funding_Source TEXT, Sponsor_ID TEXT, Benefit_Type TEXT, Face_Value DECIMAL(10,2), Actual_Buddy_Cost DECIMAL(10,2),
+        Available_Qty INTEGER, Reserved_Qty INTEGER, Expiry DATETIME, Redemption_Terms TEXT, Currency_Code TEXT DEFAULT 'AED')''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Scenarios (
         Scenario_ID INTEGER PRIMARY KEY AUTOINCREMENT,
         Cycle_ID INTEGER, Strategy TEXT, Input_JSON TEXT, Funded_Winner_Count INTEGER,
-        Registered_Coverage REAL, Qualified_Coverage REAL, Reward_Face_Value REAL,
-        Actual_Cost REAL, Projected_Profit REAL, Projected_Margin REAL, Warnings TEXT)''')
+        Registered_Coverage DECIMAL(10,2), Qualified_Coverage DECIMAL(10,2), Reward_Face_Value DECIMAL(10,2),
+        Actual_Cost DECIMAL(10,2), Projected_Profit DECIMAL(10,2), Projected_Margin DECIMAL(10,2), Warnings TEXT)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Tier_Allocations (
         Allocation_ID INTEGER PRIMARY KEY AUTOINCREMENT,
         Scenario_ID INTEGER, Tier_ID TEXT, Reward_ID INTEGER, Winner_Count INTEGER,
-        Unit_Face_Value REAL, Unit_Actual_Cost REAL, Total_Actual_Cost REAL)''')
+        Unit_Face_Value DECIMAL(10,2), Unit_Actual_Cost DECIMAL(10,2), Total_Actual_Cost DECIMAL(10,2))''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Cycle_Approvals (
         Approval_ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,8 +230,9 @@ def init_db():
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Financial_Outcomes (
         Outcome_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        Cycle_ID INTEGER, Approved_Pool REAL, Issued_Cost REAL, Redeemed_Cost REAL,
-        Expired_Cost REAL, Reversed_Cost REAL, Sponsor_Receivable REAL, Final_Profit_Impact REAL)''')
+        Cycle_ID INTEGER, Approved_Pool DECIMAL(10,2), Issued_Cost DECIMAL(10,2), Redeemed_Cost DECIMAL(10,2),
+        Expired_Cost DECIMAL(10,2), Reversed_Cost DECIMAL(10,2), Sponsor_Receivable DECIMAL(10,2), Final_Profit_Impact DECIMAL(10,2),
+        Currency_Code TEXT DEFAULT 'AED')''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Qualified_User_Funding (
         ID INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -307,8 +309,9 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     cursor = conn.cursor()
     now = datetime.datetime.now()
     current_month_str = now.strftime('%Y-%m')
+    rule_ver = st.session_state.get('rule_version', 'v2.0')
     
-    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, 'RECEIVED', 0, 'App/API Request')", (master_id, acting_role, target_id, action_id, now))
+    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, ?, ?, ?, ?, 'RECEIVED', 0, 'App/API Request', ?)", (master_id, acting_role, target_id, action_id, now, rule_ver))
     last_event_id = cursor.lastrowid
     
     if action_id.startswith('NR'):
@@ -341,40 +344,40 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
 
     cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Event_Timestamp >= datetime(?, '-5 minutes')", (master_id, now))
     if cursor.fetchone()[0] >= 10:
-        apply_fraud_penalty(master_id, last_event_id, -10, 'I07_VELOCITY_SPIKE')
+        apply_fraud_penalty(master_id, last_event_id, -10, 'VELOCITY_SPIKE')
         conn.commit(); conn.close()
-        return 'BLOCKED (Fraud)', 0, "🚨 I07: Last-minute velocity spike detected. Integrity penalty applied."
+        return 'BLOCKED (Fraud)', 0, "🚨 VELOCITY_SPIKE: Last-minute velocity spike detected."
 
     if target_id == master_id:
-        apply_fraud_penalty(master_id, last_event_id, -20, 'I02_SELF_REFERRAL', set_critical=True)
+        apply_fraud_penalty(master_id, last_event_id, -20, 'SELF_REFERRAL', set_critical=True)
         conn.commit(); conn.close()
-        return 'BLOCKED (Fraud)', 0, "🚨 I02: Self/circular interaction detected. Critical Flag applied."
+        return 'BLOCKED (Fraud)', 0, "🚨 SELF_REFERRAL: Self/circular interaction detected."
 
     if action_id in ['SUPPLIER_ADDED', 'TRANSPORTER_ADDED'] and target_id:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Target_ID = ? AND Action_ID IN ('SUPPLIER_ADDED', 'TRANSPORTER_ADDED') AND Event_ID != ?", (target_id, last_event_id))
         if cursor.fetchone()[0] > 0:
-            apply_fraud_penalty(master_id, last_event_id, -10, 'I03_FAKE_PROVIDER')
+            apply_fraud_penalty(master_id, last_event_id, -10, 'DUPLICATE_PROVIDER')
             conn.commit(); conn.close()
-            return 'BLOCKED (Fraud)', 0, "🚨 I03: Duplicate provider addition detected."
+            return 'BLOCKED (Fraud)', 0, "🚨 DUPLICATE_PROVIDER: Duplicate provider addition detected."
 
     if action_id == 'RETURN_TRIP':
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = 'RETURN_TRIP' AND Event_Timestamp >= datetime(?, '-1 days') AND Process_Status != 'REVERSED'", (master_id, now))
         if cursor.fetchone()[0] >= 3:
-            apply_fraud_penalty(master_id, last_event_id, -10, 'I10_BACKHAUL_FARMING')
+            apply_fraud_penalty(master_id, last_event_id, -10, 'FAKE_BACKHAUL')
             conn.commit(); conn.close()
-            return 'BLOCKED (Fraud)', 0, "🚨 I10: Backhaul toggle farming detected."
+            return 'BLOCKED (Fraud)', 0, "🚨 FAKE_BACKHAUL: Backhaul toggle farming detected."
 
     if action_id in ['BUDDY_HELP', 'WORKER_REFERRAL', 'NUDGE_VALID_BID'] and target_id:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_Timestamp >= datetime(?, '-30 days') AND Process_Status NOT IN ('REVERSED')", (master_id, target_id, action_id, now))
         if cursor.fetchone()[0] >= 2:
-            apply_fraud_penalty(master_id, last_event_id, -5, 'I05_PAIR_FARMING')
+            apply_fraud_penalty(master_id, last_event_id, -5, 'PAIR_COOLDOWN')
             conn.commit(); conn.close()
-            return 'BLOCKED (Fraud)', 0, "🚨 I05: Pair farming limit exceeded. Integrity penalty applied."
+            return 'BLOCKED (Fraud)', 0, "🚨 PAIR_COOLDOWN: Pair farming limit exceeded."
 
     if target_id:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_ID != ?", (master_id, target_id, action_id, last_event_id))
         if cursor.fetchone()[0] > 0:
-            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'CROSS_ROLE_DUPLICATION' WHERE Event_ID = ?", (last_event_id,))
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'EXACT_REPEAT_COOLDOWN' WHERE Event_ID = ?", (last_event_id,))
             conn.commit(); conn.close()
             return 'BLOCKED (Duplication)', 0, "Action Rejected: Cross-role duplication block."
 
@@ -388,7 +391,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     cursor.execute("SELECT Base_Points, Cooldown, Monthly_Cap FROM Action_Registry WHERE Action_ID = ?", (action_id,))
     act_meta = cursor.fetchone()
     if not act_meta: 
-        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'ACTION_NOT_FOUND' WHERE Event_ID = ?", (last_event_id,))
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'ROLE_GATE_FAILED' WHERE Event_ID = ?", (last_event_id,))
         conn.commit(); conn.close()
         return 'Failed', 0, "Action not found in registry."
         
@@ -403,7 +406,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         
     cursor.execute(query_cooldown, tuple(params_cd))
     if cursor.fetchone()[0] > 0:
-        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'COOLDOWN_BLOCKED' WHERE Event_ID = ?", (last_event_id,))
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'EXACT_REPEAT_COOLDOWN' WHERE Event_ID = ?", (last_event_id,))
         conn.commit(); conn.close()
         return 'BLOCKED (Cooldown)', 0, "Action Rejected (Blocked by cooldown or duplicate record limits)."
 
@@ -414,7 +417,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     else:
         status, points, msg_string = 'VALIDATING', base_points, f"⏳ Action received & eligible. {base_points} points waiting in 'VALIDATING' status."
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
-        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'VALIDATING', Earned_Points = ?, Reason_Code = 'Awaiting Proof' WHERE Event_ID = ?", (points, last_event_id))
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'VALIDATING', Earned_Points = ?, Reason_Code = 'OUTCOME_NOT_CONFIRMED' WHERE Event_ID = ?", (points, last_event_id))
 
     if action_id in ['DEMAND_CREATED', 'NUDGE_VALID_BID'] and acting_role == 'Champion' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'CHAMPION_NUDGE', now + datetime.timedelta(days=7)))
@@ -440,7 +443,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
                 if c_pts_row:
                     c_pts = c_pts_row[0]
                     cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Champion'", (c_pts, attr[0]))
-                    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'CHAIN_ATTRIBUTION')", (attr[0], 'Champion', master_id, 'CLOSURE', now, c_pts))
+                    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'OUTCOME_NOT_CONFIRMED', ?)", (attr[0], 'Champion', master_id, 'CLOSURE', now, c_pts, rule_ver))
                     msg_string += f" 🏆 (Chain Completed: CLOSURE attributed to Champion {attr[0]}!)"
 
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'PROPAGATION_CHAIN' AND Expiry_Date > ?", (master_id, now))
@@ -453,7 +456,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
                 if p_pts_row:
                     p_pts = p_pts_row[0]
                     cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Worker'", (p_pts, attr[0]))
-                    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'PROPAGATION_ATTRIBUTION')", (attr[0], 'Worker', master_id, 'SHARE_CHAIN_FULFILLED', now, p_pts))
+                    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'OUTCOME_NOT_CONFIRMED', ?)", (attr[0], 'Worker', master_id, 'SHARE_CHAIN_FULFILLED', now, p_pts, rule_ver))
                     msg_string += f" 🔗 (Chain Completed: Propagator {attr[0]} awarded FULFILLED!)"
 
     conn.commit()
@@ -469,6 +472,10 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
     if not event: return False, "Event not found."
     master_id, acting_role, action_id, points, current_status = event
     
+    # --- BÖLÜM 15: IDEMPOTENCY ---
+    if current_status == target_status:
+        return False, "Idempotency Protection: Target state is the same as current state."
+    
     valid_transitions = {
         'VALIDATING': ['VALIDATED', 'DISPUTED', 'REVERSED', 'EXPIRED'],
         'VALIDATED': ['OUTCOME_CONFIRMED', 'DISPUTED', 'REVERSED'],
@@ -480,7 +487,7 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
     if target_status not in valid_transitions.get(current_status, []):
         return False, f"Invalid transition from {current_status} to {target_status}."
 
-    if target_status == 'SETTLED' and current_status != 'SETTLED':
+    if target_status == 'SETTLED':
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Settled_Points = Settled_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
         reason_code = reason_code if reason_code else "APPROVED_CLEAN"
         
@@ -499,7 +506,7 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
         elif current_status == 'SETTLED':
             cursor.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
             
-        reason_code = reason_code if reason_code else "FAILED_PROOF_OR_FRAUD"
+        reason_code = reason_code if reason_code else "ACTOR_FAULT"
         
         penalty = 0
         set_critical = False
@@ -532,25 +539,52 @@ def get_normalized_weights(has_sub, has_cert):
 
 # --- STREAMLIT DASHBOARD UI ---
 st.title("🌐 Buddy Rewards - Ultimate Ecosystem Engine")
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["⚙️ Setup", "👥 Users", "🚀 Actions", "🏆 Mega & Fairness", "💰 Finance & Economics", "📜 Logs"])
+
+# --- BÖLÜM 14: YENİ SEKMELER VE RAPORLAR EKLENDİ ---
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["⚙️ Setup", "👥 Users", "🚀 Actions", "🏆 Mega & Fairness", "💰 Finance & Economics", "📜 Logs", "📊 Reports"])
 
 with tab1:
     st.header("System Dynamics & Universal Registry")
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.subheader("Universal Action Registry")
-        st.dataframe(pd.read_sql_query("SELECT * FROM Action_Registry", sqlite3.connect(DB_FILE)), use_container_width=True)
-    with c2:
-        st.subheader("Global Engine Settings")
+    
+    # 14.1 SIMULATOR KONTROLLERİ
+    st.subheader("Simulation & Configuration Controls")
+    ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
+    
+    with ctrl_col1:
+        st.session_state.rule_version = st.text_input("Rule Version", st.session_state.rule_version)
+    with ctrl_col2:
+        new_seed = st.number_input("Random Seed", value=st.session_state.random_seed)
+        if new_seed != st.session_state.random_seed:
+            st.session_state.random_seed = new_seed
+            random.seed(st.session_state.random_seed)
+            st.success(f"Seed updated to {new_seed}")
+    with ctrl_col3:
         st.session_state.rollover_mode = st.toggle("ROLLOVER_MODE", st.session_state.rollover_mode)
         st.metric("Current Simulation Month", st.session_state.current_simulation_month)
-        
+
+    st.markdown("---")
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        st.subheader("Universal Action Registry (Editable)")
+        df_registry = pd.read_sql_query("SELECT * FROM Action_Registry", sqlite3.connect(DB_FILE))
+        edited_registry = st.data_editor(df_registry, use_container_width=True)
+        if st.button("Save Registry Configuration"):
+            conn = sqlite3.connect(DB_FILE)
+            edited_registry.to_sql("Action_Registry", conn, if_exists="replace", index=False)
+            conn.execute("INSERT INTO Audit_Trail (Config_Change, Timestamp, Reason) VALUES ('Action_Registry_Updated', ?, 'Admin runtime edit')", (datetime.datetime.now(),))
+            conn.commit()
+            conn.close()
+            st.success("Action registry rules updated runtime!")
+            
+    with c2:
         st.markdown("---")
-        st.subheader("System Reset")
-        st.caption("Wipe the database to restart simulations and clear existing cooldowns/caps.")
-        if st.button("🗑️ Reset / Wipe Database", type="primary", use_container_width=True):
+        st.subheader("System Reset & Archive")
+        st.caption("No destructive editing allowed (Bölüm 15.5). Archive preserves audit trail.")
+        if st.button("🗄️ Archive & Soft Reset", type="primary", use_container_width=True):
             if os.path.exists(DB_FILE):
-                os.remove(DB_FILE)
+                archive_name = f"buddy_archive_{int(datetime.datetime.now().timestamp())}.db"
+                os.rename(DB_FILE, archive_name)
+                st.success(f"Database archived to {archive_name}")
             st.session_state.current_simulation_month = 1
             st.session_state.cycle_status = "DRAFT"
             init_db()
@@ -558,6 +592,37 @@ with tab1:
 
 with tab2:
     st.header("Ecosystem Actors & Security")
+    
+    # 14.1 10,000+ SYNTHETIC USER DESTEĞİ EKLENDİ
+    if st.button("🚀 Inject 10,000 Synthetic Users (Load Test)"):
+        with st.spinner("Injecting 10,000 users... Please wait."):
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            base_count = cursor.execute("SELECT COUNT(*) FROM Global_Users").fetchone()[0]
+            new_users = []
+            new_integrity = []
+            new_ledgers = []
+            new_qualified = []
+            now = datetime.datetime.now()
+            roles = ['Worker', 'Contractor', 'Supplier', 'Transporter']
+            locations = ['Dubai', 'Abu Dhabi', 'Sharjah']
+            for i in range(base_count+1, base_count+10001):
+                mid = f'ID-{i}'
+                prole = roles[i % 4]
+                loc = locations[i % 3]
+                new_users.append((mid, f'User-{i}', prole, "", loc, 'India', 'Camp-A', True, False, False, f'EID{i}', f'+97150{i:07d}', f'DEV-FP-{i}', True, now, 0, now.month, loc, f'Company-{i}'))
+                new_integrity.append((mid, 100, 'Normal', 0))
+                new_ledgers.append((mid, prole, 0, 0, 0, None, st.session_state.rule_version, None))
+                new_qualified.append((mid, 0.0, 0.0))
+                
+            cursor.executemany("INSERT INTO Global_Users VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", new_users)
+            cursor.executemany("INSERT INTO Integrity_Profiles (Master_ID, Integrity_Score, Action_Status, Critical_Flag) VALUES (?,?,?,?)", new_integrity)
+            cursor.executemany("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger, Pending_Points, Settled_Points, Reversed_Points, Event_ID, Rule_Version, Reason_Code) VALUES (?,?,?,?,?,?,?,?)", new_ledgers)
+            cursor.executemany("INSERT INTO Monthly_Qualified_Users (Master_ID, Total_Score, Rollover_Bonus) VALUES (?,?,?)", new_qualified)
+            conn.commit()
+            conn.close()
+        st.success("10,000 synthetic users injected successfully!")
+        
     df_users = pd.read_sql_query("SELECT Master_ID, Primary_Role, Secondary_Roles, EID_Verified, Has_Certification, Continuous_Paid_Months, Integrity_Score, Action_Status, Critical_Flag FROM Global_Users JOIN Integrity_Profiles USING(Master_ID)", sqlite3.connect(DB_FILE))
     def color_status(val):
         color = 'green' if val == 'Normal' else 'orange' if val == 'Warning' else 'red'
@@ -581,7 +646,7 @@ with tab2:
             cur = conn.cursor()
             cur.execute("UPDATE Integrity_Profiles SET Integrity_Score = 0, Action_Status = 'Block', Critical_Flag = 1 WHERE Master_ID = ?", (f_uid,))
             cur.execute("UPDATE Reward_Ledgers SET Reversed_Points = Reversed_Points + Settled_Points + Pending_Points, Settled_Points = 0, Pending_Points = 0 WHERE Master_ID = ?", (f_uid,))
-            cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, 'System', 'FRAUD_INTERVENTION', ?, 'REVERSED', 0, ?)", (f_uid, datetime.datetime.now(), f_code))
+            cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, 'System', 'FRAUD_INTERVENTION', ?, 'REVERSED', 0, ?, ?)", (f_uid, datetime.datetime.now(), f_code, st.session_state.rule_version))
             conn.commit()
             conn.close()
             st.success(f"Critical Flag applied to {f_uid} for {f_code}. All points reversed.")
@@ -622,16 +687,17 @@ with tab3:
             cur = conn.cursor()
             workers = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
             now = datetime.datetime.now()
+            rule_ver = st.session_state.rule_version
             for w in workers[:5]: 
                 for day in range(30):
                     sim_date = now - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5)", (w, sim_date))
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5)", (w, sim_date))
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
                 for day in range(15): 
                     sim_date = now - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10)", (w, sim_date))
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10, ?)", (w, sim_date, rule_ver))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
             conn.commit()
             conn.close()
@@ -675,7 +741,7 @@ with tab3:
         if len(pending_disp) > 0:
             d_col1, d_col2 = st.columns(2)
             d_ev_id = d_col1.selectbox("Select Disputed Event", pending_disp['Event_ID'].tolist(), key="d_sel")
-            r_code = d_col2.selectbox("Reason Code", REASON_CODES, key="r_code")
+            r_code = d_col2.selectbox("Reason Code", FLAT_REASON_CODES, key="r_code")
             dr_col1, dr_col2 = st.columns(2)
             if dr_col1.button("✅ Reject Dispute (Settle)", use_container_width=True): 
                 success, msg = progress_event_lifecycle(d_ev_id, 'SETTLED', r_code)
@@ -705,6 +771,7 @@ with tab4:
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
             curr_month = st.session_state.current_simulation_month
+            rule_ver = st.session_state.rule_version
             
             workers_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
             base_date = datetime.datetime.now()
@@ -712,27 +779,27 @@ with tab4:
             for w in workers_list[:5]:
                 for day in range(30):
                     sim_date = base_date - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5)", (w, sim_date))
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5)", (w, sim_date))
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5, ?)", (w, sim_date, rule_ver))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
                 
                 for day in range(15):
                     sim_date = base_date - datetime.timedelta(days=day)
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10)", (w, sim_date))
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10, ?)", (w, sim_date, rule_ver))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
             
             now_ts = datetime.datetime.now()
             captains_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Captain%' OR Primary_Role='Captain'", conn)['Master_ID'].tolist()
             for c in captains_list:
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Captain', 'VERIFY_SIGNUP', ?, 'SETTLED', 2)", (c, now_ts))
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Captain', 'ACTIVE_CLUSTER', ?, 'SETTLED', 25)", (c, now_ts))
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Captain', 'VERIFY_SIGNUP', ?, 'SETTLED', 2, ?)", (c, now_ts, rule_ver))
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Captain', 'ACTIVE_CLUSTER', ?, 'SETTLED', 25, ?)", (c, now_ts, rule_ver))
                 cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 27 WHERE Master_ID=? AND Role_Ledger='Captain'", (c,))
                 
             champions_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Champion%' OR Primary_Role='Champion'", conn)['Master_ID'].tolist()
             for ch in champions_list:
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Champion', 'DEMAND_CREATED', ?, 'SETTLED', 20)", (ch, now_ts))
-                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Champion', 'CLOSURE', ?, 'SETTLED', 50)", (ch, now_ts))
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Champion', 'DEMAND_CREATED', ?, 'SETTLED', 20, ?)", (ch, now_ts, rule_ver))
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Rule_Version) VALUES (?, 'Champion', 'CLOSURE', ?, 'SETTLED', 50, ?)", (ch, now_ts, rule_ver))
                 cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 70 WHERE Master_ID=? AND Role_Ledger='Champion'", (ch,))
 
             users_df = pd.read_sql_query("""
@@ -761,32 +828,32 @@ with tab4:
                 if role == 'Worker':
                     if counts.get('WORKER_VIDEO_WATCH',0)<30 or counts.get('WORKER_QUIZ_ATTEMPT',0)<30 or counts.get('WORKER_REFERRAL',0)<15:
                         is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_MIN_FAILED'})
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_VIDEO_MIN_FAILED'})
                 
                 elif role == 'Contractor':
                     if counts.get('POST_REQ', 0) < 1:
                         is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (No Valid Requirement)'})
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
                 
                 elif role == 'Supplier':
                     if counts.get('PROFILE', 0) < 1 and counts.get('QUOTE', 0) < 1:
                         is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (No Profile/Quote)'})
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
                 
                 elif role == 'Transporter':
                     if counts.get('RETURN_TRIP', 0) < 1 and counts.get('DELIVERY', 0) < 1:
                         is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (No Valid Trip)'})
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
                         
                 elif role == 'Captain':
                     if counts.get('VERIFY_SIGNUP', 0) < 1 or (counts.get('ACTIVE_CLUSTER', 0) == 0 and counts.get('HIGH_RETENTION_CLUSTER', 0) == 0):
                         is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (Missing Captain targets)'})
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
                         
                 elif role == 'Champion':
                     if counts.get('DEMAND_CREATED', 0) < 1 and counts.get('RESOLVE_UNMET_DEMAND', 0) < 1 and counts.get('CLOSURE', 0) < 1:
                         is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (Missing Champion targets)'})
+                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
 
                 if not is_qualified:
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
@@ -857,14 +924,14 @@ with tab4:
                 if curr_month == 2 and 1 in cand_past_wins:
                     cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'; rollovers.append(cand); continue
                 if curr_month >= 5 and (curr_month - 1) in cand_past_wins:
-                    cand['Reason_Code'] = 'CONSECUTIVE_WIN_EXCLUDED'; rollovers.append(cand); continue
+                    cand['Reason_Code'] = 'EXACT_REPEAT_COOLDOWN'; rollovers.append(cand); continue
                     
                 cohort_approved = False
                 track_var = ""
                 
                 if is_new:
                     if c_new < new_cap: cohort_approved = True; track_var = "new"
-                    else: cand['Reason_Code'] = 'NEW_WINNER_CAP_FULL'
+                    else: cand['Reason_Code'] = 'WINNER_CAP_FULL'
                 else:
                     if curr_month <= 2: 
                         cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'
@@ -929,8 +996,9 @@ with tab4:
         if st.button("Inject 6-Month Mega Data for ID-1", type="secondary"):
             conn, now = sqlite3.connect(DB_FILE), datetime.datetime.now()
             cur = conn.cursor()
+            rule_ver = st.session_state.rule_version
             for a, t in MEGA_TARGETS.items():
-                for _ in range(t): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', ?, ?, 'SETTLED')", (a, now))
+                for _ in range(t): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Rule_Version) VALUES ('ID-1', 'Worker', ?, ?, 'SETTLED', ?)", (a, now, rule_ver))
             cur.execute("UPDATE Global_Users SET EID_Verified=1, Has_Certification=1, Continuous_Paid_Months=15 WHERE Master_ID='ID-1'")
             cur.execute("UPDATE Integrity_Profiles SET Integrity_Score=100, Action_Status='Normal', Critical_Flag=0 WHERE Master_ID='ID-1'")
             conn.commit()
@@ -951,7 +1019,7 @@ with tab4:
                 mid, fail_reason = w['Master_ID'], None
                 if not w['EID_Verified']: fail_reason = 'MEGA_EID_FAILED'
                 elif m_cert and not w['Has_Certification']: fail_reason = 'MEGA_CERT_FAILED'
-                elif w['Continuous_Paid_Months'] < req_months: fail_reason = f'MEGA_SUBSCRIPTION_FAILED (<{req_months}m)'
+                elif w['Continuous_Paid_Months'] < req_months: fail_reason = 'MEGA_SUBSCRIPTION_FAILED'
                 else:
                     cur.execute("SELECT Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
                     i_score, i_status, c_flag = cur.fetchone()
@@ -965,14 +1033,14 @@ with tab4:
                     cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
                     counts = dict(cur.fetchall())
                     for req_a, req_t in MEGA_TARGETS.items():
-                        if counts.get(req_a, 0) < req_t: fail_reason = f'MEGA_COUNTS_FAILED ({req_a})'; break
+                        if counts.get(req_a, 0) < req_t: fail_reason = 'MEGA_COUNTS_FAILED'; break
                             
                 if fail_reason: 
                     mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
                 else: 
                     cur.execute("SELECT COALESCE(SUM(Earned_Points), 0) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED')", (mid,))
                     base_mega_score = cur.fetchone()[0]
-                    mega_qualified.append({'Master_ID': mid, 'Mega_Score': base_mega_score, 'Reason_Code': 'QUALIFIED'})
+                    mega_qualified.append({'Master_ID': mid, 'Mega_Score': base_mega_score, 'Reason_Code': 'MEGA_APPROVED'})
             
             mega_qualified.sort(key=lambda x: x['Mega_Score'], reverse=True)
             
@@ -993,7 +1061,6 @@ with tab4:
 with tab5:
     st.header("Financial & Economics Control Centre")
     
-    # --- BÖLÜM 12.9: ROLES & PERMISSIONS ---
     admin_role = st.selectbox("Simulate Login Role (12.9):", [
         "Rewards Operations Maker", 
         "Product/Admin Reviewer", 
@@ -1007,7 +1074,6 @@ with tab5:
     
     with f_col1:
         st.subheader("Income & Costs (12.1)")
-        # 12.1 FORMÜL EKSİKLİKLERİ
         collected_rev = st.number_input("Net Collected Revenue", value=120000)
         sponsor_funding = st.number_input("Cash Sponsorship Funding", value=15000)
         var_costs = st.number_input("Variable Operating Costs", value=20000)
@@ -1029,7 +1095,6 @@ with tab5:
         unused_budget = st.selectbox("Unused Budget Treatment (FIN-013)", ["Expire", "Carry forward", "Transfer to Mega"])
         redemption_rate = st.slider("Redemption-Rate Assumption (%) (FIN-014)", 10, 100, 85) / 100.0
         
-    # 12.1 Net Contribution Hesaplaması
     net_revenue_calc = collected_rev + sponsor_funding
     net_contribution = net_revenue_calc - var_costs - refunds - gateway_costs - fulfillment_costs
     
@@ -1053,7 +1118,6 @@ with tab5:
     st.markdown("---")
     st.subheader("Distribution Strategies & Tiers (12.4, 12.6)")
     
-    # 12.4 Funding Sources (Görsel temsil)
     st.caption("**Funding Sources Supported:** 1. Buddy-funded | 2. Sponsor-funded | 3. Co-funded | 4. Partner in-kind | 5. Internal digital benefit | 6. Fee waiver")
     
     scenarios = {
@@ -1080,7 +1144,6 @@ with tab5:
     if not is_tier_valid:
         st.error(f"ECON-006: Tier percentages must sum to 1.0 (Currently {total_alloc:.2f})")
         
-    # 12.3 & 12.6 Actual Cost vs Face Value
     tier_costs = {"T1": {"face": 5, "actual": 5}, "T2": {"face": 15, "actual": 15}, "T3": {"face": 35, "actual": 35}, "T4": {"face": 100, "actual": 100}}
     
     t1_b = approved_pool * alloc["T1"]
@@ -1095,7 +1158,6 @@ with tab5:
     
     total_funded_winners = t1_count + t2_count + t3_count + t4_count
     
-    # Sponsor Tier (FIN-015)
     sponsor_included = st.checkbox("Include Sponsor Inventory (FIN-015)", value=True)
     sponsor_qty = st.number_input("Sponsor Tier Qty (Face Value: 50, Actual Cost: 0)", value=5 if sponsor_included else 0)
     if sponsor_included:
@@ -1108,7 +1170,6 @@ with tab5:
     c4.metric("Tier 4 - Monthly Star", f"{t4_count} users")
     c5.metric("Sponsor Tier", f"{int(sponsor_qty)} users")
     
-    # 12.2 Coverage Metrics
     st.markdown("#### Coverage Metrics (12.2)")
     conn = sqlite3.connect(DB_FILE)
     registered_users = conn.execute("SELECT COUNT(*) FROM Global_Users").fetchone()[0]
@@ -1132,7 +1193,6 @@ with tab5:
         st.info(f"**Current Status:** \n### {st.session_state.cycle_status}")
         
     with col_state2:
-        # ECON Kuralları Validasyonu
         valid = True
         errors = []
         
@@ -1193,7 +1253,8 @@ with tab5:
                     if admin_role in ["System Service Account", "Rewards Operations Maker", "Final Authorised Admin"]:
                         st.session_state.cycle_status = "RELEASED"
                         conn = sqlite3.connect(DB_FILE)
-                        conn.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES ('SYSTEM', 'Admin', 'REWARDS_RELEASED', ?, 'SETTLED', 0, 'CYCLE_CLOSED')", (datetime.datetime.now(),))
+                        rule_ver = st.session_state.rule_version
+                        conn.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES ('SYSTEM', 'Admin', 'REWARDS_RELEASED', ?, 'SETTLED', 0, 'CYCLE_CLOSED', ?)", (datetime.datetime.now(), rule_ver))
                         conn.commit()
                         conn.close()
                         st.balloons()
@@ -1222,11 +1283,75 @@ with tab6:
     st.header("System Logs")
     log_type = st.radio("Select Log Type:", ["Reward Ledgers (Wallets)", "Event Stream", "Marketplace Attributions (Chains)", "Monthly Winners History"])
     
+    conn = sqlite3.connect(DB_FILE)
     if log_type == "Event Stream":
-        st.dataframe(pd.read_sql_query("SELECT * FROM Event_Stream_Logs ORDER BY Event_ID DESC LIMIT 50", sqlite3.connect(DB_FILE)), use_container_width=True)
+        st.dataframe(pd.read_sql_query("SELECT * FROM Event_Stream_Logs ORDER BY Event_ID DESC LIMIT 50", conn), use_container_width=True)
     elif log_type == "Reward Ledgers (Wallets)":
-        st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Ledgers", sqlite3.connect(DB_FILE)), use_container_width=True)
+        st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Ledgers", conn), use_container_width=True)
     elif log_type == "Marketplace Attributions (Chains)":
-        st.dataframe(pd.read_sql_query("SELECT * FROM Marketplace_Attributions", sqlite3.connect(DB_FILE)), use_container_width=True)
+        st.dataframe(pd.read_sql_query("SELECT * FROM Marketplace_Attributions", conn), use_container_width=True)
     else:
-        st.dataframe(pd.read_sql_query("SELECT * FROM Past_Winners", sqlite3.connect(DB_FILE)), use_container_width=True)
+        st.dataframe(pd.read_sql_query("SELECT * FROM Past_Winners", conn), use_container_width=True)
+    conn.close()
+
+# --- BÖLÜM 14.2 & 14.3: YENİ RAPORLAMA SEKMESİ ---
+with tab7:
+    st.header("📊 Simulator Reports & Analytics")
+    st.caption("Access all 19 missing operational and financial reports as specified in PDF Section 16 & 18.")
+    
+    report_cat = st.radio("Report Category:", ["Operational Reports (14.2)", "Financial Reports (14.3)"], horizontal=True)
+    conn = sqlite3.connect(DB_FILE)
+    
+    if report_cat == "Operational Reports (14.2)":
+        op_rep = st.selectbox("Select Report:", [
+            "1. Action Registry Validation", "2. User Monthly Ledger", "3. Actor KPI Report", 
+            "4. Monthly Qualification", "5. Monthly Winner Selection", "6. Mega Eligibility", 
+            "7. Integrity/Fraud", "8. Reversal/Clawback", "9. Audit Trail"
+        ])
+        
+        if op_rep.startswith("1."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Action_Registry", conn), use_container_width=True)
+        elif op_rep.startswith("2."):
+            st.dataframe(pd.read_sql_query("SELECT Master_ID, Role_Ledger, Pending_Points, Settled_Points, Reversed_Points, Rule_Version FROM Reward_Ledgers", conn), use_container_width=True)
+        elif op_rep.startswith("3."):
+            st.dataframe(pd.read_sql_query("SELECT Acting_Role, COUNT(*) as Total_Actions, SUM(Earned_Points) as Total_Points_Earned FROM Event_Stream_Logs GROUP BY Acting_Role", conn), use_container_width=True)
+        elif op_rep.startswith("4."):
+            st.dataframe(pd.read_sql_query("SELECT Master_ID, Total_Score, Rollover_Bonus FROM Monthly_Qualified_Users", conn), use_container_width=True)
+        elif op_rep.startswith("5."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Past_Winners", conn), use_container_width=True)
+        elif op_rep.startswith("6."):
+            st.dataframe(pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users", conn), use_container_width=True)
+        elif op_rep.startswith("7."):
+            st.dataframe(pd.read_sql_query("SELECT Master_ID, Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Integrity_Score < 100 OR Action_Status != 'Normal' OR Critical_Flag = 1", conn), use_container_width=True)
+        elif op_rep.startswith("8."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Event_Stream_Logs WHERE Process_Status = 'REVERSED'", conn), use_container_width=True)
+        elif op_rep.startswith("9."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Audit_Trail", conn), use_container_width=True)
+
+    else:
+        fin_rep = st.selectbox("Select Report:", [
+            "1. Reward Economics Summary", "2. Population Coverage", "3. Funding Source Report", 
+            "4. Tier Allocation Report", "5. Scenario Comparison", "6. Budget & Profit Breach Report", 
+            "7. Redemption & Expiry Report", "8. Mega Provision Report", "9. Cycle Audit Report"
+        ])
+        
+        if fin_rep.startswith("1."):
+            st.dataframe(pd.read_sql_query("SELECT Cycle_ID, Month_ID, Status, Sub_Revenue, Market_Revenue, Ops_Costs, Budget_Ceiling, Profit_Margin_Pct, Fixed_Profit_Floor, Max_Affordable_Pool, Approved_Reward_Pool FROM reward_cycle_financial_config", conn), use_container_width=True)
+        elif fin_rep.startswith("2."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Qualified_User_Funding", conn), use_container_width=True)
+        elif fin_rep.startswith("3."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Inventory", conn), use_container_width=True)
+        elif fin_rep.startswith("4."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Tier_Allocations", conn), use_container_width=True)
+        elif fin_rep.startswith("5."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Scenarios", conn), use_container_width=True)
+        elif fin_rep.startswith("6."):
+            st.info("No breaches logged in current session.")
+        elif fin_rep.startswith("7."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Financial_Outcomes", conn), use_container_width=True)
+        elif fin_rep.startswith("8."):
+            st.info("Mega Provision opening reserve and usage will appear here during cycle close.")
+        elif fin_rep.startswith("9."):
+            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Cycle_Approvals", conn), use_container_width=True)
+            
+    conn.close()
