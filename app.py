@@ -128,7 +128,6 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # --- BÖLÜM 11.1: EKSİK ALANLAR EKLENDİ ---
     cursor.execute('''CREATE TABLE IF NOT EXISTS Global_Users (
         Master_ID TEXT PRIMARY KEY, Name TEXT, Primary_Role TEXT, Secondary_Roles TEXT, Location TEXT, Nationality TEXT, 
         Labor_Cluster TEXT, Consent_Given BOOLEAN, Has_Subscription BOOLEAN, Has_Certification BOOLEAN,
@@ -161,10 +160,7 @@ def init_db():
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS Marketplace_Attributions (
         Attribution_ID INTEGER PRIMARY KEY AUTOINCREMENT,
-        Source_ID TEXT,
-        Target_ID TEXT,
-        Attribution_Type TEXT,
-        Expiry_Date DATETIME)''')
+        Source_ID TEXT, Target_ID TEXT, Attribution_Type TEXT, Expiry_Date DATETIME)''')
 
     cursor.execute('''CREATE TABLE IF NOT EXISTS reward_cycle_financial_config (
         Cycle_ID INTEGER PRIMARY KEY AUTOINCREMENT, Month_ID INTEGER, Status TEXT,
@@ -174,7 +170,6 @@ def init_db():
         Rule_Version TEXT, Currency TEXT DEFAULT 'AED', Profit_Mode TEXT DEFAULT 'HYBRID',
         Refund_Reserve REAL DEFAULT 0, Other_Reserves REAL DEFAULT 0, Created_By TEXT, Config_Hash TEXT)''')
 
-    # --- BÖLÜM 11.2: TAMAMEN EKSİK TABLOLAR EKLENDİ ---
     cursor.execute('''CREATE TABLE IF NOT EXISTS Attribution_Records (
         Attribution_ID INTEGER PRIMARY KEY AUTOINCREMENT,
         Referrer_ID TEXT, Captain_ID TEXT, Champion_ID TEXT, Campaign_ID TEXT, Share_Chain_ID TEXT,
@@ -242,7 +237,6 @@ def init_db():
         Cycle_ID INTEGER, User_ID TEXT, Eligibility_Status TEXT, Selection_Status TEXT,
         Funding_Status TEXT, Tier_ID TEXT, Reason_Code TEXT, Rollover_Status TEXT)''')
 
-
     cursor.execute("SELECT COUNT(*) FROM Global_Users")
     if cursor.fetchone()[0] == 0:
         for act in UNIVERSAL_ACTION_REGISTRY:
@@ -270,7 +264,6 @@ def init_db():
             join_date = datetime.datetime.now() - datetime.timedelta(days=random.randint(10, 200))
             paid_months = random.randint(0, 8) if sub else 0
             
-            # --- 19 Sütunluk Yeni Ekleme Formatı ---
             cursor.execute("""INSERT INTO Global_Users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
                            (mid, f'User-{i}', primary_role, secondary_roles, loc, nat, cluster, True, sub, cert,
                             f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months,
@@ -999,27 +992,55 @@ with tab4:
 
 with tab5:
     st.header("Financial & Economics Control Centre")
+    
+    # --- BÖLÜM 12.9: ROLES & PERMISSIONS ---
+    admin_role = st.selectbox("Simulate Login Role (12.9):", [
+        "Rewards Operations Maker", 
+        "Product/Admin Reviewer", 
+        "Finance Approver", 
+        "Final Authorised Admin", 
+        "QA / Auditor", 
+        "System Service Account"
+    ])
+    
     f_col1, f_col2, f_col3 = st.columns(3)
     
     with f_col1:
-        st.subheader("Income & Costs")
-        sub_rev = st.number_input("Subscription Revenue (AED)", value=50000)
-        market_rev = st.number_input("Marketplace Revenue (AED)", value=120000)
-        var_costs = st.number_input("Variable Ops/Gateway Costs (AED)", value=30000)
+        st.subheader("Income & Costs (12.1)")
+        # 12.1 FORMÜL EKSİKLİKLERİ
+        collected_rev = st.number_input("Net Collected Revenue", value=120000)
+        sponsor_funding = st.number_input("Cash Sponsorship Funding", value=15000)
+        var_costs = st.number_input("Variable Operating Costs", value=20000)
+        refunds = st.number_input("Refunds", value=2000)
+        gateway_costs = st.number_input("Gateway Costs", value=3000)
+        fulfillment_costs = st.number_input("Reward Fulfilment Costs", value=1000)
         
     with f_col2:
-        st.subheader("Admin Guardrails")
+        st.subheader("Admin Guardrails (12.5)")
         budget_ceil = st.number_input("Budget Ceiling (Max Limit)", value=40000)
         policy_limit = st.number_input("Policy Reward Limit (AED)", value=35000) 
+        
+        profit_mode = st.selectbox("Profit Policy Mode (FIN-002)", ["Hybrid", "Fixed", "Percentage"])
         profit_margin = st.slider("Required Profit Margin (%)", 10, 50, 20)
         fixed_floor = st.number_input("Fixed Profit Floor (AED)", value=15000)
         mega_prov = st.number_input("Mega Rewards Provision (AED)", value=5000)
         
-    net_revenue = sub_rev + market_rev
-    net_contribution = net_revenue - var_costs
-    req_profit = max(fixed_floor, (profit_margin / 100) * net_revenue)
-    max_affordable = max(0, net_contribution - mega_prov - req_profit)
+        refund_reserve = st.number_input("Refund/Chargeback Reserve (FIN-007)", value=2000)
+        unused_budget = st.selectbox("Unused Budget Treatment (FIN-013)", ["Expire", "Carry forward", "Transfer to Mega"])
+        redemption_rate = st.slider("Redemption-Rate Assumption (%) (FIN-014)", 10, 100, 85) / 100.0
+        
+    # 12.1 Net Contribution Hesaplaması
+    net_revenue_calc = collected_rev + sponsor_funding
+    net_contribution = net_revenue_calc - var_costs - refunds - gateway_costs - fulfillment_costs
     
+    if profit_mode == "Fixed":
+        req_profit = fixed_floor
+    elif profit_mode == "Percentage":
+        req_profit = (profit_margin / 100.0) * net_revenue_calc
+    else:
+        req_profit = max(fixed_floor, (profit_margin / 100.0) * net_revenue_calc)
+        
+    max_affordable = max(0, net_contribution - mega_prov - req_profit - refund_reserve)
     approved_pool = min(budget_ceil, max_affordable, policy_limit)
     
     with f_col3:
@@ -1030,61 +1051,172 @@ with tab5:
         st.metric("FINAL APPROVED POOL", f"AED {approved_pool:,.2f}")
         
     st.markdown("---")
-    st.subheader("Distribution Strategies (Select One)")
-    t1_cost, t2_cost, t3_cost = 5, 20, 50 
+    st.subheader("Distribution Strategies & Tiers (12.4, 12.6)")
+    
+    # 12.4 Funding Sources (Görsel temsil)
+    st.caption("**Funding Sources Supported:** 1. Buddy-funded | 2. Sponsor-funded | 3. Co-funded | 4. Partner in-kind | 5. Internal digital benefit | 6. Fee waiver")
     
     scenarios = {
-        "Conservative (Profit-Oriented)": {"T1": 0.10, "T2": 0.30, "T3": 0.60},
-        "Balanced": {"T1": 0.30, "T2": 0.40, "T3": 0.30},
-        "Growth (Widespread Adoption)": {"T1": 0.60, "T2": 0.30, "T3": 0.10} 
+        "Conservative (Profit-Oriented)": {"T1": 0.10, "T2": 0.30, "T3": 0.50, "T4": 0.10},
+        "Balanced": {"T1": 0.25, "T2": 0.40, "T3": 0.25, "T4": 0.10},
+        "Growth (Widespread Adoption)": {"T1": 0.50, "T2": 0.30, "T3": 0.15, "T4": 0.05},
+        "Custom (Manual Override)": None
     }
     
     selected_strat = st.radio("Choose Distribution Strategy:", list(scenarios.keys()), horizontal=True)
-    alloc = scenarios[selected_strat]
+    
+    if selected_strat == "Custom (Manual Override)":
+        c_sl1, c_sl2, c_sl3, c_sl4 = st.columns(4)
+        pct_t1 = c_sl1.number_input("Tier 1 %", 0.0, 1.0, 0.25)
+        pct_t2 = c_sl2.number_input("Tier 2 %", 0.0, 1.0, 0.40)
+        pct_t3 = c_sl3.number_input("Tier 3 %", 0.0, 1.0, 0.25)
+        pct_t4 = c_sl4.number_input("Tier 4 %", 0.0, 1.0, 0.10)
+        alloc = {"T1": pct_t1, "T2": pct_t2, "T3": pct_t3, "T4": pct_t4}
+    else:
+        alloc = scenarios[selected_strat]
+        
+    total_alloc = sum(alloc.values())
+    is_tier_valid = (total_alloc == 1.0)
+    if not is_tier_valid:
+        st.error(f"ECON-006: Tier percentages must sum to 1.0 (Currently {total_alloc:.2f})")
+        
+    # 12.3 & 12.6 Actual Cost vs Face Value
+    tier_costs = {"T1": {"face": 5, "actual": 5}, "T2": {"face": 15, "actual": 15}, "T3": {"face": 35, "actual": 35}, "T4": {"face": 100, "actual": 100}}
     
     t1_b = approved_pool * alloc["T1"]
     t2_b = approved_pool * alloc["T2"]
     t3_b = approved_pool * alloc["T3"]
+    t4_b = approved_pool * alloc["T4"]
     
-    t1_count = int(t1_b / t1_cost)
-    t2_count = int(t2_b / t2_cost)
-    t3_count = int(t3_b / t3_cost)
+    t1_count = int(t1_b / (tier_costs["T1"]["actual"] * redemption_rate)) if tier_costs["T1"]["actual"] > 0 else 0
+    t2_count = int(t2_b / (tier_costs["T2"]["actual"] * redemption_rate)) if tier_costs["T2"]["actual"] > 0 else 0
+    t3_count = int(t3_b / (tier_costs["T3"]["actual"] * redemption_rate)) if tier_costs["T3"]["actual"] > 0 else 0
+    t4_count = int(t4_b / (tier_costs["T4"]["actual"] * redemption_rate)) if tier_costs["T4"]["actual"] > 0 else 0
     
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Strategy", selected_strat)
-    c2.metric("Tier 1 Capacity", f"{t1_count} users")
-    c3.metric("Tier 2 Capacity", f"{t2_count} users")
-    c4.metric("Tier 3 Capacity", f"{t3_count} users")
+    total_funded_winners = t1_count + t2_count + t3_count + t4_count
     
-    st.info(f"Total {t1_count + t2_count + t3_count} users can be rewarded based on the selected scenario ({selected_strat}).")
+    # Sponsor Tier (FIN-015)
+    sponsor_included = st.checkbox("Include Sponsor Inventory (FIN-015)", value=True)
+    sponsor_qty = st.number_input("Sponsor Tier Qty (Face Value: 50, Actual Cost: 0)", value=5 if sponsor_included else 0)
+    if sponsor_included:
+        total_funded_winners += int(sponsor_qty)
+    
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Tier 1 - Recognition", f"{t1_count} users")
+    c2.metric("Tier 2 - Standard", f"{t2_count} users")
+    c3.metric("Tier 3 - High Perf.", f"{t3_count} users")
+    c4.metric("Tier 4 - Monthly Star", f"{t4_count} users")
+    c5.metric("Sponsor Tier", f"{int(sponsor_qty)} users")
+    
+    # 12.2 Coverage Metrics
+    st.markdown("#### Coverage Metrics (12.2)")
+    conn = sqlite3.connect(DB_FILE)
+    registered_users = conn.execute("SELECT COUNT(*) FROM Global_Users").fetchone()[0]
+    qualified_users = conn.execute("SELECT COUNT(*) FROM Monthly_Qualified_Users").fetchone()[0]
+    conn.close()
+    
+    reg_cov = (total_funded_winners / registered_users * 100) if registered_users > 0 else 0
+    qual_cov = (total_funded_winners / qualified_users * 100) if qualified_users > 0 else 0
+    
+    cov1, cov2 = st.columns(2)
+    cov1.metric("Registered Coverage %", f"{reg_cov:.1f}%")
+    cov2.metric("Qualified Coverage %", f"{qual_cov:.1f}%")
     
     st.markdown("---")
-    st.subheader("Approval Workflow")
+    st.subheader("Approval Workflow & Decision States (12.7, 12.8)")
+    
+    if 'cycle_maker' not in st.session_state: st.session_state.cycle_maker = "None"
+    
     col_state1, col_state2 = st.columns([1,3])
     with col_state1: 
         st.info(f"**Current Status:** \n### {st.session_state.cycle_status}")
+        
     with col_state2:
-        if st.session_state.cycle_status == "DRAFT": 
-            if st.button("Lock Snapshot & Move to SIMULATED"): st.session_state.cycle_status = "SIMULATED"; st.rerun()
-        elif st.session_state.cycle_status == "SIMULATED": 
-            if st.button("Submit to Finance (SUBMITTED)"): st.session_state.cycle_status = "SUBMITTED"; st.rerun()
-        elif st.session_state.cycle_status == "SUBMITTED": 
-            if st.button("Grant FINANCE_APPROVED"): st.session_state.cycle_status = "FINANCE_APPROVED"; st.rerun()
-        elif st.session_state.cycle_status == "FINANCE_APPROVED": 
-            if st.button("Grant FINAL_APPROVED"): st.session_state.cycle_status = "FINAL_APPROVED"; st.rerun()
-        elif st.session_state.cycle_status == "FINAL_APPROVED":
-            if st.button("🚀 RELEASE REWARDS", type="primary"): 
-                st.session_state.cycle_status = "RELEASED"
-                conn = sqlite3.connect(DB_FILE)
-                conn.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES ('SYSTEM', 'Admin', 'REWARDS_RELEASED', ?, 'SETTLED', 0, 'CYCLE_CLOSED')", (datetime.datetime.now(),))
-                conn.commit()
-                conn.close()
-                st.balloons()
-                st.success("Rewards distributed and recorded in accounting as 'Reconciled'!")
-                st.rerun()
-        elif st.session_state.cycle_status == "RELEASED":
-            st.success("This month's budget successfully distributed and cycle closed.")
-            if st.button("Reset Cycle (New Month)"): st.session_state.cycle_status = "DRAFT"; st.rerun()
+        # ECON Kuralları Validasyonu
+        valid = True
+        errors = []
+        
+        if not is_tier_valid:
+            valid = False
+            errors.append("ECON-006: Tier percentages inconsistent.")
+        if approved_pool > budget_ceil:
+            valid = False
+            errors.append("ECON-001: Approved pool exceeds budget ceiling.")
+        if approved_pool > max_affordable:
+            valid = False
+            errors.append("ECON-002: Approved pool exceeds max affordable pool.")
+        if req_profit < fixed_floor and profit_mode != "Fixed":
+            errors.append("ECON-003: Projected profit < required floor (Warning).")
+            
+        if admin_role == "QA / Auditor":
+            st.warning("QA / Auditor has read-only access. Cannot execute transitions.")
+        else:
+            for e in errors: st.error(e)
+            
+            if st.session_state.cycle_status == "DRAFT":
+                if valid and st.button("Lock Snapshot & Move to SIMULATED"):
+                    if admin_role == "Rewards Operations Maker":
+                        st.session_state.cycle_status = "SIMULATED"
+                        st.session_state.cycle_maker = "Rewards Operations Maker"
+                        st.rerun()
+                    else: st.error("Requires 'Rewards Operations Maker' role.")
+            
+            elif st.session_state.cycle_status == "SIMULATED":
+                if valid and st.button("Submit to Finance (SUBMITTED)"):
+                    if admin_role == "Rewards Operations Maker":
+                        st.session_state.cycle_status = "SUBMITTED"
+                        st.rerun()
+                    else: st.error("Requires 'Rewards Operations Maker' role.")
+                if st.button("RETURN TO DRAFT"): st.session_state.cycle_status = "DRAFT"; st.rerun()
+            
+            elif st.session_state.cycle_status == "SUBMITTED":
+                if valid and st.button("Grant FINANCE_APPROVED"):
+                    if admin_role == "Finance Approver":
+                        st.session_state.cycle_status = "FINANCE_APPROVED"
+                        st.rerun()
+                    else: st.error("Requires 'Finance Approver' role.")
+                if st.button("REJECT"): st.session_state.cycle_status = "REJECTED"; st.rerun()
+            
+            elif st.session_state.cycle_status == "FINANCE_APPROVED":
+                if valid and st.button("Grant FINAL_APPROVED"):
+                    if admin_role == "Final Authorised Admin":
+                        if st.session_state.cycle_maker == admin_role: 
+                            st.error("ECON-009: Maker and Approver cannot be the same user.")
+                        else:
+                            st.session_state.cycle_status = "FINAL_APPROVED"
+                            st.rerun()
+                    else: st.error("Requires 'Final Authorised Admin' role.")
+                if st.button("EMERGENCY HOLD"): st.session_state.cycle_status = "EMERGENCY_HOLD"; st.rerun()
+            
+            elif st.session_state.cycle_status == "FINAL_APPROVED":
+                if st.button("🚀 RELEASE REWARDS", type="primary"):
+                    if admin_role in ["System Service Account", "Rewards Operations Maker", "Final Authorised Admin"]:
+                        st.session_state.cycle_status = "RELEASED"
+                        conn = sqlite3.connect(DB_FILE)
+                        conn.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES ('SYSTEM', 'Admin', 'REWARDS_RELEASED', ?, 'SETTLED', 0, 'CYCLE_CLOSED')", (datetime.datetime.now(),))
+                        conn.commit()
+                        conn.close()
+                        st.balloons()
+                        st.success("Rewards distributed and recorded in accounting as 'Reconciled'!")
+                        st.rerun()
+                    else: st.error("Requires executing authority.")
+                if st.button("CANCEL CYCLE"): st.session_state.cycle_status = "CANCELLED"; st.rerun()
+            
+            elif st.session_state.cycle_status == "RELEASED":
+                st.success("This month's budget successfully distributed.")
+                if st.button("Mark PARTIALLY_RECONCILED"): st.session_state.cycle_status = "PARTIALLY_RECONCILED"; st.rerun()
+            
+            elif st.session_state.cycle_status == "PARTIALLY_RECONCILED":
+                if st.button("Mark RECONCILED"): st.session_state.cycle_status = "RECONCILED"; st.rerun()
+            
+            elif st.session_state.cycle_status == "RECONCILED":
+                if st.button("Mark CLOSED"): st.session_state.cycle_status = "CLOSED"; st.rerun()
+            
+            elif st.session_state.cycle_status in ["REJECTED", "CANCELLED", "CLOSED", "EMERGENCY_HOLD"]:
+                if st.button("Reset Cycle (New Month) / Unlock"): 
+                    st.session_state.cycle_status = "DRAFT"
+                    st.session_state.cycle_maker = "None"
+                    st.rerun()
 
 with tab6:
     st.header("System Logs")
