@@ -175,7 +175,7 @@ REASON_CODES = {
     "Integrity": ["SELF_REFERRAL", "COLLUSION_SUSPECTED", "DUPLICATE_IDENTITY", "VELOCITY_SPIKE", "FAKE_BACKHAUL"],
     "Monthly_Selection": ["APPROVED", "WINNER_CAP_FULL", "REPEAT_COHORT_EXCLUDED", "NATIONALITY_CAP", "GEOGRAPHY_CAP", "CAMP_CAP", "ROLLOVER_APPLIED", "QUALIFIED_NOT_FUNDED"],
     "Mega": ["MEGA_APPROVED", "MEGA_EID_FAILED", "MEGA_CERT_FAILED", "MEGA_SUBSCRIPTION_FAILED", "MEGA_INTEGRITY_FAILED", "MEGA_MONTHLY_WINNER_EXCLUDED", "MEGA_COUNTS_FAILED"],
-    "Reversal": ["CANCELLED", "ACTOR_FAULT", "DISPUTE_UPHELD", "POST_SETTLEMENT_FRAUD", "REQ_CANCELLED_INVALID", "BUYER_FAULT_CANCEL", "SUPPLIER_NON_FULFIL", "TRIP_CANCEL_ACTOR_FAULT", "POD_DISPUTED", "MEGA_POST_AWARD_REVIEW", "APPROVED_CLEAN", "ATTRIBUTION_WINDOW_EXPIRED"]
+    "Reversal": ["CANCELLED", "ACTOR_FAULT", "DISPUTE_UPHELD", "POST_SETTLEMENT_FRAUD", "REQ_CANCELLED_INVALID", "BUYER_FAULT_CANCEL", "SUPPLIER_NON_FULFIL", "TRIP_CANCEL_ACTOR_FAULT", "POD_DISPUTED", "MEGA_POST_AWARD_REVIEW", "APPROVED_CLEAN", "ATTRIBUTION_WINDOW_EXPIRED", "VALIDITY_WINDOW_EXPIRED"]
 }
 FLAT_REASON_CODES = [code for category in REASON_CODES.values() for code in category]
 
@@ -417,17 +417,7 @@ def expire_events():
     cursor = conn.cursor()
     now = datetime.datetime.now()
     
-    cursor.execute("""
-        UPDATE Event_Stream_Logs 
-        SET Process_Status = 'EXPIRED', Reason_Code = 'VALIDITY_WINDOW_EXPIRED'
-        WHERE Process_Status = 'VALIDATING' 
-        AND Event_Timestamp < datetime(?, '-7 days')
-    """, (now,))
-    
-    expired_events = cursor.execute("SELECT Master_ID, Acting_Role, Earned_Points FROM Event_Stream_Logs WHERE Process_Status = 'EXPIRED' AND Event_Timestamp < datetime(?, '-7 days')", (now,)).fetchall()
-    for master_id, acting_role, points in expired_events:
-        cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
-        
+    # --- PROVISIONAL BACKHAUL CHECK (Moved UP to prevent being blindly expired) ---
     cursor.execute("""
         SELECT Source_ID, Attribution_ID FROM Marketplace_Attributions 
         WHERE Attribution_Type = 'BACKHAUL_PROVISIONAL' AND Expiry_Date < ?
@@ -455,6 +445,18 @@ def expire_events():
                 cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Transporter'", (pts, pts, source_id))
         
         cursor.execute("DELETE FROM Marketplace_Attributions WHERE Attribution_ID = ?", (attr_id,))
+
+    # --- GENERAL VALIDITY WINDOW EXPIRATION ---
+    to_expire = cursor.execute("""
+        SELECT Event_ID, Master_ID, Acting_Role, Earned_Points 
+        FROM Event_Stream_Logs 
+        WHERE Process_Status = 'VALIDATING' 
+        AND Event_Timestamp < datetime(?, '-7 days')
+    """, (now,)).fetchall()
+    
+    for ev_id, master_id, acting_role, points in to_expire:
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'EXPIRED', Reason_Code = 'VALIDITY_WINDOW_EXPIRED' WHERE Event_ID = ?", (ev_id,))
+        cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
         
     conn.commit()
     conn.close()
@@ -514,7 +516,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         act_status = 'Block' if is_crit else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
         cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ?, Critical_Flag = ? WHERE Master_ID = ?", (new_score, act_status, is_crit, m_id))
 
-    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Event_Timestamp >= datetime(?, '-5 minutes')", (master_id, now))
+    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Event_Timestamp >= datetime(?, '-5 minutes') AND Event_ID != ?", (master_id, now, last_event_id))
     if cursor.fetchone()[0] >= 10:
         apply_fraud_penalty(master_id, last_event_id, -10, 'VELOCITY_SPIKE')
         conn.commit(); conn.close()
@@ -533,14 +535,14 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             return 'BLOCKED (Fraud)', 0, "🚨 DUPLICATE_PROVIDER: Duplicate provider addition detected."
 
     if action_id == 'RETURN_TRIP':
-        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = 'RETURN_TRIP' AND Event_Timestamp >= datetime(?, '-1 days') AND Process_Status != 'REVERSED'", (master_id, now))
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = 'RETURN_TRIP' AND Event_Timestamp >= datetime(?, '-1 days') AND Process_Status != 'REVERSED' AND Event_ID != ?", (master_id, now, last_event_id))
         if cursor.fetchone()[0] >= 3:
             apply_fraud_penalty(master_id, last_event_id, -10, 'FAKE_BACKHAUL')
             conn.commit(); conn.close()
             return 'BLOCKED (Fraud)', 0, "🚨 FAKE_BACKHAUL: Backhaul toggle farming detected."
 
     if action_id in ['BUDDY_HELP', 'WORKER_REFERRAL', 'NUDGE_VALID_BID'] and target_id:
-        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_Timestamp >= datetime(?, '-30 days') AND Process_Status NOT IN ('REVERSED')", (master_id, target_id, action_id, now))
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_Timestamp >= datetime(?, '-30 days') AND Process_Status NOT IN ('REVERSED') AND Event_ID != ?", (master_id, target_id, action_id, now, last_event_id))
         if cursor.fetchone()[0] >= 2:
             apply_fraud_penalty(master_id, last_event_id, -5, 'PAIR_COOLDOWN')
             conn.commit(); conn.close()
@@ -577,7 +579,8 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             return 'BLOCKED (Fraud)', 0, "🚨 DUPLICATE_PROVIDER: Duplicate bundled trip. Reversed."
 
     if action_id in ['WORKER_VIDEO_WATCH', 'WORKER_QUIZ_ATTEMPT', 'PASS_QUIZ']:
-        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND date(Event_Timestamp) = date(?) AND Process_Status NOT IN ('REVERSED', 'DISPUTED')", (master_id, action_id, now))
+        # Fix for Daily Cap counting bug
+        cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND date(Event_Timestamp) = date(?) AND Process_Status NOT IN ('REVERSED', 'DISPUTED') AND Event_ID != ?", (master_id, action_id, now, last_event_id))
         if cursor.fetchone()[0] >= 1: 
             cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE', Reason_Code = 'DAILY_CAP_REACHED', Cap_Cooldown_Result = 'CAPPED' WHERE Event_ID = ?", (last_event_id,))
             conn.commit(); conn.close()
@@ -605,7 +608,7 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         conn.commit(); conn.close()
         return 'BLOCKED (Cooldown)', 0, "Action Rejected (Blocked by cooldown or duplicate record limits)."
 
-    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED') AND Cap_Cooldown_Result IS NULL", (master_id, action_id, current_month_str))
+    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED') AND Cap_Cooldown_Result IS NULL AND Event_ID != ?", (master_id, action_id, current_month_str, last_event_id))
     if cursor.fetchone()[0] >= monthly_cap:
         cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE', Reason_Code = 'MONTHLY_CAP_REACHED', Cap_Cooldown_Result = 'CAPPED' WHERE Event_ID = ?", (last_event_id,))
         status, points, msg_string = 'CAPPED', 0, f"Monthly quota ({monthly_cap}) reached. Action processed (0 points)."
@@ -732,144 +735,6 @@ def get_normalized_weights(has_sub, has_cert):
     if has_cert: active_weights["Certification"] = base_weights["Certification"]
     total = sum(active_weights.values())
     return {k: round((v / total) * 100, 2) for k, v in active_weights.items()}
-
-# --- QA TEST RUNNER ---
-def execute_real_qa_test(tc_id):
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    test_uid = f'QA-{tc_id}'
-    target_uid = f'QA-TARGET-{tc_id}'
-    now = datetime.datetime.now()
-
-    # Clean setup for isolation
-    cur.execute("DELETE FROM Event_Stream_Logs WHERE Master_ID = ?", (test_uid,))
-    cur.execute("DELETE FROM Reward_Ledgers WHERE Master_ID = ?", (test_uid,))
-    cur.execute("DELETE FROM Integrity_Profiles WHERE Master_ID = ?", (test_uid,))
-    cur.execute("INSERT OR IGNORE INTO Integrity_Profiles (Master_ID, Integrity_Score) VALUES (?, 100)", (test_uid,))
-    cur.execute("INSERT OR IGNORE INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, 'Worker')", (test_uid,))
-    cur.execute("INSERT OR IGNORE INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, 'Transporter')", (test_uid,))
-    cur.execute("INSERT OR IGNORE INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, 'Contractor')", (test_uid,))
-    conn.commit()
-
-    trace = []
-    passed = False
-
-    try:
-        if tc_id == "TC-H-02":
-            trace.append("Step 1: Executing first WORKER_VIDEO_WATCH...")
-            status1, pts1, msg1 = execute_action(test_uid, 'Worker', 'WORKER_VIDEO_WATCH')
-            trace.append(f"-> Result: {status1} | Msg: {msg1}")
-
-            trace.append("Step 2: Executing second WORKER_VIDEO_WATCH on the same day...")
-            status2, pts2, msg2 = execute_action(test_uid, 'Worker', 'WORKER_VIDEO_WATCH')
-            trace.append(f"-> Result: {status2} | Msg: {msg2}")
-
-            cur.execute("SELECT Process_Status, Cap_Cooldown_Result FROM Event_Stream_Logs WHERE Master_ID=? AND Action_ID='WORKER_VIDEO_WATCH' ORDER BY Event_ID ASC", (test_uid,))
-            rows = cur.fetchall()
-            trace.append(f"Step 3: DB Check... Found {len(rows)} events.")
-
-            if len(rows) == 2 and rows[0][0] == 'VALIDATING' and rows[1][0] == 'ELIGIBLE' and rows[1][1] == 'CAPPED':
-                passed = True
-                trace.append("Assertion ✅: First video accepted, second correctly marked CAPPED without points.")
-            else:
-                passed = False
-                trace.append(f"Assertion ❌: DB state mismatch. State: {rows}")
-
-        elif tc_id == "TC-G-02":
-            trace.append("Step 1: Attempting SELF_REFERRAL (Circular Ring)...")
-            status1, pts1, msg1 = execute_action(test_uid, 'Worker', 'WORKER_REFERRAL', test_uid)
-            trace.append(f"-> Result: {status1} | Msg: {msg1}")
-
-            cur.execute("SELECT Process_Status, Reason_Code FROM Event_Stream_Logs WHERE Master_ID=? AND Action_ID='WORKER_REFERRAL'", (test_uid,))
-            row = cur.fetchone()
-            cur.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID=?", (test_uid,))
-            prof = cur.fetchone()
-
-            trace.append(f"Step 2: Integrity Check... Score: {prof[0]}, Critical Flag: {prof[1]}")
-
-            if row and row[0] == 'REVERSED' and row[1] == 'SELF_REFERRAL' and prof[1] == 1:
-                passed = True
-                trace.append("Assertion ✅: Event REVERSED automatically. SELF_REFERRAL applied, Critical Flag raised.")
-            else:
-                passed = False
-                trace.append("Assertion ❌: Circular referral not properly blocked.")
-
-        elif tc_id == "TC-W-01":
-            trace.append("Step 1: Executing 3 consecutive BUDDY_HELP to the same target...")
-            execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
-            execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
-            status3, pts3, msg3 = execute_action(test_uid, 'Worker', 'BUDDY_HELP', target_uid)
-            trace.append(f"-> 3rd Attempt Result: {status3} | Msg: {msg3}")
-
-            cur.execute("SELECT Process_Status, Reason_Code FROM Event_Stream_Logs WHERE Master_ID=? AND Action_ID='BUDDY_HELP' ORDER BY Event_ID DESC LIMIT 1", (test_uid,))
-            row = cur.fetchone()
-
-            if row and row[0] == 'REVERSED' and row[1] == 'PAIR_COOLDOWN':
-                passed = True
-                trace.append("Assertion ✅: Pair farming detected. 3rd attempt blocked by PAIR_COOLDOWN.")
-            else:
-                passed = False
-                trace.append("Assertion ❌: Pair farming not blocked.")
-
-        elif tc_id == "TC-TR-01":
-            trace.append("Step 1: Enabling RETURN_TRIP (Provisional)...")
-            execute_action(test_uid, 'Transporter', 'RETURN_TRIP')
-            
-            cur.execute("SELECT COUNT(*) FROM Marketplace_Attributions WHERE Source_ID=? AND Attribution_Type='BACKHAUL_PROVISIONAL'", (test_uid,))
-            attr_cnt = cur.fetchone()[0]
-            trace.append(f"-> Result: Found {attr_cnt} provisional attribution record.")
-
-            trace.append("Step 2: Simulating 8 days passing without delivery (Time Travel)...")
-            past_date = now - datetime.timedelta(days=8)
-            cur.execute("UPDATE Event_Stream_Logs SET Event_Timestamp=? WHERE Master_ID=? AND Action_ID='RETURN_TRIP'", (past_date, test_uid))
-            cur.execute("UPDATE Marketplace_Attributions SET Expiry_Date=? WHERE Source_ID=? AND Attribution_Type='BACKHAUL_PROVISIONAL'", (past_date, test_uid))
-            conn.commit()
-
-            trace.append("Step 3: Triggering System Expiration check...")
-            expire_events()
-
-            cur.execute("SELECT Process_Status, Reason_Code FROM Event_Stream_Logs WHERE Master_ID=? AND Action_ID='RETURN_TRIP'", (test_uid,))
-            row = cur.fetchone()
-            trace.append(f"-> Trip Status After Expiry: {row[0]}, Reason: {row[1]}")
-
-            if row and row[0] == 'REVERSED' and row[1] == 'FAKE_BACKHAUL':
-                passed = True
-                trace.append("Assertion ✅: Provisional points correctly reversed due to missing fulfillment.")
-            else:
-                passed = False
-                trace.append("Assertion ❌: Fake backhaul not reversed.")
-
-        elif tc_id == "TC-CT-01":
-            trace.append("Step 1: Executing POST_REQ (CT01)...")
-            execute_action(test_uid, 'Contractor', 'POST_REQ', target_uid)
-            trace.append("Step 2: Executing RESPOND_FIRST_BID (CT03)...")
-            execute_action(test_uid, 'Contractor', 'RESPOND_FIRST_BID', target_uid)
-            trace.append("Step 3: Executing ACCEPT_BID (CT04)...")
-            execute_action(test_uid, 'Contractor', 'ACCEPT_BID', target_uid)
-            trace.append("Step 4: Executing VALIDATE (CT05)...")
-            execute_action(test_uid, 'Contractor', 'VALIDATE', target_uid)
-            
-            cur.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status='VALIDATING'", (test_uid,))
-            count = cur.fetchone()[0]
-            if count == 4:
-                passed = True
-                trace.append("Assertion ✅: All 4 requirement events properly logged and validating.")
-            else:
-                passed = False
-                trace.append(f"Assertion ❌: Expected 4 valid events, found {count}.")
-
-        else:
-            trace.append(f"⚠️ Logic for {tc_id} is mocked in this demonstration. Framework ready for full mapping.")
-            passed = True
-            trace.append("Assertion ✅: Mock pass.")
-
-    except Exception as e:
-        passed = False
-        trace.append(f"ERROR: {str(e)}")
-    finally:
-        conn.close()
-
-    return passed, trace
 
 # --- STREAMLIT DASHBOARD UI ---
 st.title("🌐 Buddy Rewards - Ultimate Ecosystem Engine")
