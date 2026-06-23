@@ -149,18 +149,54 @@ def init_db():
 init_db()
 
 # --- CORE ENGINE FUNCTIONS ---
+def expire_events():
+    """Validity window'u dolan VALIDATING event'leri EXPIRED durumuna çeker."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    now = datetime.datetime.now()
+    # Varsayılan validity window: 7 gün (168 saat)
+    cursor.execute("""
+        UPDATE Event_Stream_Logs 
+        SET Process_Status = 'EXPIRED', Reason_Code = 'VALIDITY_WINDOW_EXPIRED'
+        WHERE Process_Status = 'VALIDATING' 
+        AND Event_Timestamp < datetime(?, '-7 days')
+    """, (now,))
+    
+    # Bekleyen puanları sil
+    expired_events = cursor.execute("SELECT Master_ID, Acting_Role, Earned_Points FROM Event_Stream_Logs WHERE Process_Status = 'EXPIRED' AND Event_Timestamp < datetime(?, '-7 days')", (now,)).fetchall()
+    for master_id, acting_role, points in expired_events:
+        cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
+        
+    conn.commit()
+    conn.close()
+
 def execute_action(master_id, acting_role, action_id, target_id=None):
+    """
+    RECEIVED -> ELIGIBLE -> VALIDATING aşamalarını işler.
+    """
+    expire_events() # Eski eventleri temizle
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     now = datetime.datetime.now()
     current_month_str = now.strftime('%Y-%m')
     
+    # 1. RECEIVED Stage (Sistem logu, ödül yok)
+    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, 'RECEIVED', 0, 'App/API Request')", (master_id, acting_role, target_id, action_id, now))
+    last_event_id = cursor.lastrowid
+    
+    # 2. ELIGIBLE Check
     cursor.execute("SELECT Base_Points, Cooldown, Monthly_Cap FROM Action_Registry WHERE Action_ID = ?", (action_id,))
     act_meta = cursor.fetchone()
-    if not act_meta: return 'Failed', 0, ""
+    if not act_meta: 
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'ACTION_NOT_FOUND' WHERE Event_ID = ?", (last_event_id,))
+        conn.commit(); conn.close()
+        return 'Failed', 0, "Action not found in registry."
+        
     base_points, cooldown, monthly_cap = act_meta
-    
-    query_cooldown = "SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND Process_Status IN ('VALIDATING', 'SETTLED', 'DISPUTED', 'CAPPED') AND Event_Timestamp >= datetime(?, '-' || ? || ' minutes')"
+    cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE' WHERE Event_ID = ?", (last_event_id,))
+
+    # Cooldown Kontrolü
+    query_cooldown = "SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED') AND Event_Timestamp >= datetime(?, '-' || ? || ' minutes')"
     params_cd = [master_id, action_id, now, cooldown]
     if target_id:
         query_cooldown += " AND Target_ID = ?"
@@ -168,47 +204,65 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         
     cursor.execute(query_cooldown, tuple(params_cd))
     if cursor.fetchone()[0] > 0:
-        conn.close()
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'COOLDOWN_BLOCKED' WHERE Event_ID = ?", (last_event_id,))
+        conn.commit(); conn.close()
         return 'BLOCKED (Cooldown)', 0, "Action Rejected (Blocked by cooldown or duplicate record limits)."
 
-    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'SETTLED', 'DISPUTED', 'CAPPED')", (master_id, action_id, current_month_str))
+    # Aylık Cap Kontrolü
+    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED')", (master_id, action_id, current_month_str))
     if cursor.fetchone()[0] >= monthly_cap:
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'EXPIRED', Reason_Code = 'MONTHLY_CAP_REACHED' WHERE Event_ID = ?", (last_event_id,))
         status, points, msg_string = 'CAPPED', 0, f"Monthly quota ({monthly_cap}) reached. Action processed (0 points)."
     else:
-        status, points, msg_string = 'VALIDATING', base_points, f"⏳ Action received. {base_points} points waiting in 'VALIDATING' status."
+        # 3. VALIDATING Stage (Provisional Puan)
+        status, points, msg_string = 'VALIDATING', base_points, f"⏳ Action received & eligible. {base_points} points waiting in 'VALIDATING' status."
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'VALIDATING', Earned_Points = ?, Reason_Code = 'Awaiting Proof' WHERE Event_ID = ?", (points, last_event_id))
 
-    cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (master_id, acting_role, target_id, action_id, now, status, points, ""))
-    
-    if action_id == 'DEMAND_CREATED' and acting_role == 'Champion' and target_id:
+    # Zincir (Attribution) İşlemleri
+    if action_id == 'DEMAND_CREATED' and acting_role == 'Champion' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'CHAMPION_NUDGE', now + datetime.timedelta(days=7)))
         msg_string += " 🔗 (Chain Started: 7-day tracking activated for target.)"
 
-    if action_id in ['FULFILLMENT', 'DELIVERY'] and status != 'CAPPED':
+    if action_id in ['FULFILLMENT', 'DELIVERY'] and status == 'VALIDATING':
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
         for attr in cursor.fetchall():
             cursor.execute("SELECT Base_Points FROM Action_Registry WHERE Action_ID = 'CLOSURE'")
             c_pts = cursor.fetchone()[0]
             cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points + ? WHERE Master_ID = ? AND Role_Ledger = 'Champion'", (c_pts, attr[0]))
-            cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (attr[0], 'Champion', master_id, 'CLOSURE', now, 'VALIDATING', c_pts, "CHAIN_ATTRIBUTION"))
+            cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code) VALUES (?, ?, ?, ?, ?, 'VALIDATING', ?, 'CHAIN_ATTRIBUTION')", (attr[0], 'Champion', master_id, 'CLOSURE', now, c_pts))
             msg_string += f" 🏆 (Chain Completed: CLOSURE attributed to Champion {attr[0]}!)"
 
     conn.commit()
     conn.close()
     return status, points, msg_string
 
-def resolve_event(event_id, resolution_action, reason_code=""):
+def progress_event_lifecycle(event_id, target_status, reason_code=""):
+    """
+    VALIDATING -> VALIDATED -> OUTCOME_CONFIRMED -> SETTLED veya DISPUTED/REVERSED geçişlerini yönetir.
+    """
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT Master_ID, Acting_Role, Action_ID, Earned_Points, Process_Status FROM Event_Stream_Logs WHERE Event_ID = ?", (event_id,))
     event = cursor.fetchone()
-    if not event or event[4] not in ['VALIDATING', 'DISPUTED']: return False, "Only VALIDATING or DISPUTED can be resolved."
-        
+    
+    if not event: return False, "Event not found."
     master_id, acting_role, action_id, points, current_status = event
     
-    if resolution_action == 'SETTLE':
+    valid_transitions = {
+        'VALIDATING': ['VALIDATED', 'DISPUTED', 'REVERSED', 'EXPIRED'],
+        'VALIDATED': ['OUTCOME_CONFIRMED', 'DISPUTED', 'REVERSED'],
+        'OUTCOME_CONFIRMED': ['SETTLED', 'DISPUTED', 'REVERSED'],
+        'DISPUTED': ['SETTLED', 'REVERSED']
+    }
+
+    if target_status not in valid_transitions.get(current_status, []):
+        return False, f"Invalid transition from {current_status} to {target_status}."
+
+    # Ledger ve Integrity Etkileri (Sadece SETTLED veya REVERSED durumunda bakiye değişir)
+    if target_status == 'SETTLED':
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Settled_Points = Settled_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
-        new_status, reason_code = 'SETTLED', reason_code if reason_code else "APPROVED_CLEAN"
+        reason_code = reason_code if reason_code else "APPROVED_CLEAN"
         cursor.execute("SELECT Integrity_Impact FROM Action_Registry WHERE Action_ID = ?", (action_id,))
         impact = cursor.fetchone()[0]
         if impact != 0:
@@ -216,16 +270,15 @@ def resolve_event(event_id, resolution_action, reason_code=""):
             new_score = min(100, max(0, cursor.fetchone()[0] + impact)) 
             act_status = 'Normal' if new_score >= 80 else 'Warning' if new_score >= 60 else 'Review' if new_score >= 40 else 'Block'
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
-    elif resolution_action == 'REVERSE':
+            
+    elif target_status == 'REVERSED':
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
-        new_status = 'REVERSED'
-    else:
-        new_status, reason_code = 'DISPUTED', reason_code if reason_code else "DISPUTE_RAISED"
-        
-    cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ?, Reason_Code = ? WHERE Event_ID = ?", (new_status, reason_code, event_id))
+        reason_code = reason_code if reason_code else "FAILED_PROOF_OR_FRAUD"
+
+    cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ?, Reason_Code = ? WHERE Event_ID = ?", (target_status, reason_code, event_id))
     conn.commit()
     conn.close()
-    return True, f"Event {event_id} set to {new_status}."
+    return True, f"Event {event_id} successfully moved to {target_status}."
 
 def get_normalized_weights(has_sub, has_cert):
     base_weights = {"Marketplace": 30, "Referral": 20, "Habit": 15, "Subscription": 20, "Certification": 15}
@@ -313,19 +366,26 @@ with tab3:
             st.success("Successfully pushed 30/30/15 SETTLED events for top 5 workers!")
             
     with col2:
-        st.subheader("2. Admin Resolution Desk")
+        st.subheader("2. Admin Resolution Desk & Lifecycle Management")
         conn = sqlite3.connect(DB_FILE)
-        pending_val = pd.read_sql_query("SELECT Event_ID, Master_ID, Action_ID, Earned_Points FROM Event_Stream_Logs WHERE Process_Status = 'VALIDATING'", conn)
-        pending_disp = pd.read_sql_query("SELECT Event_ID, Master_ID, Action_ID, Reason_Code FROM Event_Stream_Logs WHERE Process_Status = 'DISPUTED'", conn)
+        pending_val = pd.read_sql_query("SELECT Event_ID, Action_ID, Process_Status, Earned_Points FROM Event_Stream_Logs WHERE Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED')", conn)
+        pending_disp = pd.read_sql_query("SELECT Event_ID, Action_ID, Reason_Code FROM Event_Stream_Logs WHERE Process_Status = 'DISPUTED'", conn)
         conn.close()
         
-        st.markdown("#### ⏳ Standard Validation Operations (Validating)")
+        st.markdown("#### ⏳ Lifecycle Progression Pipeline")
         if len(pending_val) > 0:
-            v_col1, v_col2, v_col3 = st.columns([2,1,1])
-            v_ev_id = v_col1.selectbox("Select Validating Event", pending_val['Event_ID'].tolist(), key="v_sel")
-            if v_col2.button("✅ Settle", key="v_set"): resolve_event(v_ev_id, 'SETTLE'); st.rerun()
-            if v_col3.button("⚠️ Dispute", key="v_dis"): resolve_event(v_ev_id, 'DISPUTE'); st.rerun()
-        else: st.write("No pending standard operations.")
+            l_col1, l_col2, l_col3 = st.columns([2,1,1])
+            l_ev_id = l_col1.selectbox("Select Pending Event", pending_val['Event_ID'].astype(str) + " (" + pending_val['Process_Status'] + ")", key="l_sel").split(" ")[0]
+            
+            target_opts = ['VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED', 'REVERSED']
+            selected_target = l_col2.selectbox("Move to:", target_opts, key="l_tgt")
+            
+            if l_col3.button("Execute Transition", use_container_width=True): 
+                success, msg = progress_event_lifecycle(int(l_ev_id), selected_target)
+                if success: st.success(msg)
+                else: st.error(msg)
+                st.rerun()
+        else: st.write("No active events in pipeline.")
             
         st.markdown("---")
         st.markdown("#### ⚠️ Admin Decision Desk (Disputed)")
@@ -334,8 +394,8 @@ with tab3:
             d_ev_id = d_col1.selectbox("Select Disputed Event", pending_disp['Event_ID'].tolist(), key="d_sel")
             r_code = d_col2.selectbox("Reason Code", REASON_CODES, key="r_code")
             dr_col1, dr_col2 = st.columns(2)
-            if dr_col1.button("✅ Reject Dispute (Settle)", use_container_width=True): resolve_event(d_ev_id, 'SETTLE', r_code); st.rerun()
-            if dr_col2.button("❌ Cancel Event (Reverse)", use_container_width=True): resolve_event(d_ev_id, 'REVERSE', r_code); st.rerun()
+            if dr_col1.button("✅ Reject Dispute (Settle)", use_container_width=True): progress_event_lifecycle(d_ev_id, 'SETTLED', r_code); st.rerun()
+            if dr_col2.button("❌ Cancel Event (Reverse)", use_container_width=True): progress_event_lifecycle(d_ev_id, 'REVERSED', r_code); st.rerun()
         else: st.write("No disputes awaiting decision.")
 
 with tab4:
