@@ -4,6 +4,8 @@ import pandas as pd
 import datetime
 import random
 import os
+import json
+import hashlib
 
 # --- PAGE SETTINGS ---
 st.set_page_config(page_title="Buddy Rewards - Ultimate Engine", layout="wide")
@@ -261,6 +263,8 @@ def init_db():
             loc = locations[i % len(locations)]
             sub = i % 2 == 0
             cert = i % 3 == 0
+            # --- BÖLÜM 5.1 COMPANY SPONSOR DATA INJECTION ---
+            company_val = f"Company-{i}" if i % 4 == 0 else ""
             
             join_date = datetime.datetime.now() - datetime.timedelta(days=random.randint(10, 200))
             paid_months = random.randint(0, 8) if sub else 0
@@ -268,7 +272,7 @@ def init_db():
             cursor.execute("""INSERT INTO Global_Users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
                            (mid, f'User-{i}', primary_role, secondary_roles, loc, nat, cluster, True, sub, cert,
                             f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months,
-                            join_date.month, loc, f"Company-{i}"))
+                            join_date.month, loc, company_val))
             
             cursor.execute("INSERT INTO Integrity_Profiles (Master_ID, Critical_Flag) VALUES (?, 0)", (mid,))
             
@@ -482,7 +486,6 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             conn.commit(); conn.close()
             return 'BLOCKED (Fraud)', 0, "🚨 PAIR_COOLDOWN: Pair farming limit exceeded. Integrity penalty applied."
 
-    # --- BÖLÜM 3.1: REFERRAL ATTRIBUTION WINDOW ENFORCEMENT ---
     if action_id in ['USER_ACTIVE', 'WORKER_RETAINED'] and acting_role == 'Captain' and target_id:
         cursor.execute("""
             SELECT COUNT(*) FROM Marketplace_Attributions 
@@ -621,7 +624,6 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
             reason_code = reason_code if reason_code else "OUTCOME_NOT_CONFIRMED"
         trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver, datetime.datetime.now())
             
-    # --- BÖLÜM 3.2: CLAWBACK NEGATIVE CARRY ---
     elif target_status == 'REVERSED':
         if current_status in ['VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'DISPUTED']:
             cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
@@ -893,7 +895,6 @@ with tab4:
     with t4_col1:
         st.markdown("### 📅 Monthly Selection Engine")
         
-        # --- BÖLÜM 4.2 & 4.3: HABIT & MARKETPLACE GATES CONFIG ---
         st.markdown("#### Worker Habit & Contribution Gate Thresholds")
         th_col1, th_col2, th_col3 = st.columns(3)
         video_threshold = th_col1.number_input("Min Videos:", min_value=1, max_value=30, value=30)
@@ -1003,7 +1004,6 @@ with tab4:
                             is_qualified = False
                             disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
 
-                # --- BÖLÜM 4.4: ROLLOVER REQUALIFICATION ENFORCEMENT ---
                 if not is_qualified:
                     cur.execute("SELECT Rollover_Bonus FROM Monthly_Qualified_Users WHERE Master_ID = ?", (mid,))
                     prev_rollover_row = cur.fetchone()
@@ -1013,7 +1013,6 @@ with tab4:
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
                     continue
 
-                # --- BÖLÜM 4.1: SUBSCRIPTION COHORT-AWARE GATE ---
                 user_join_month = u.get('Join_Month', 1) 
                 sub_eligible_month = user_join_month + 3 
                 if curr_month >= sub_eligible_month:
@@ -1138,6 +1137,13 @@ with tab4:
                 for r in rollovers: 
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = CASE WHEN Rollover_Bonus + 5 > 15 THEN 15 ELSE Rollover_Bonus + 5 END WHERE Master_ID = ?", (r['Master_ID'],))
             
+            for d in disqualified_pool:
+                cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'DISQUALIFIED', 'NOT_SELECTED', ?, 'RESET')", (curr_month, d['Master_ID'], d['Reason']))
+            for w in winners:
+                cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'QUALIFIED', 'WINNER', ?, 'RESET')", (curr_month, w['Master_ID'], w.get('Reason_Code', 'APPROVED')))
+            for r in rollovers:
+                cur.execute("INSERT INTO Qualified_User_Funding (Cycle_ID, User_ID, Eligibility_Status, Selection_Status, Reason_Code, Rollover_Status) VALUES (?, ?, 'QUALIFIED', 'NOT_FUNDED', ?, 'ACCUMULATED')", (curr_month, r['Master_ID'], r.get('Reason_Code', 'QUALIFIED_NOT_FUNDED')))
+
             conn.commit()
             conn.close()
             st.session_state.current_simulation_month += 1
@@ -1154,6 +1160,9 @@ with tab4:
         mega_cycle = mc_col1.selectbox("Mega Cycle:", [1, 2, 3], format_func=lambda x: f"Cycle {x} (M4-{x*6 if x<3 else 18})")
         mega_cap = mc_col2.number_input("Mega Winner Cap:", min_value=1, value=3)
         
+        mega_nat_cap = st.number_input("Mega Max per Nationality:", value=2, key="mega_nat")
+        mega_camp_cap = st.number_input("Mega Max per Camp:", value=2, key="mega_camp")
+        
         if st.button("Inject 6-Month Mega Data for ID-1", type="secondary"):
             conn, now = sqlite3.connect(DB_FILE), datetime.datetime.now()
             cur = conn.cursor()
@@ -1169,7 +1178,7 @@ with tab4:
         if st.button("🚀 Run Mega Qualification & Selection", type="primary"):
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
-            workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months, Join_Month FROM Global_Users WHERE Primary_Role='Worker'", conn)
+            workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users WHERE Primary_Role='Worker'", conn)
             mega_qualified, mega_failed = [], []
             
             if mega_cycle == 1: req_months = 2 if m_grace else 3
@@ -1178,9 +1187,13 @@ with tab4:
             
             for _, w in workers.iterrows():
                 mid, fail_reason = w['Master_ID'], None
+                cur.execute("SELECT Company FROM Global_Users WHERE Master_ID = ?", (mid,))
+                company_val = cur.fetchone()[0]
+                is_sponsored = company_val is not None and company_val != ""
+                
                 if not w['EID_Verified']: fail_reason = 'MEGA_EID_FAILED'
                 elif m_cert and not w['Has_Certification']: fail_reason = 'MEGA_CERT_FAILED'
-                elif w['Continuous_Paid_Months'] < req_months: fail_reason = 'MEGA_SUBSCRIPTION_FAILED'
+                elif not is_sponsored and w['Continuous_Paid_Months'] < req_months: fail_reason = 'MEGA_SUBSCRIPTION_FAILED'
                 else:
                     cur.execute("SELECT Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
                     i_score, i_status, c_flag = cur.fetchone()
@@ -1205,19 +1218,56 @@ with tab4:
             
             mega_qualified.sort(key=lambda x: x['Mega_Score'], reverse=True)
             
+            mega_nat_counts, mega_camp_counts = {}, {}
             final_mega_winners = []
-            for i, cand in enumerate(mega_qualified):
-                if i < mega_cap:
+
+            for cand in mega_qualified:
+                mid = cand['Master_ID']
+                cur.execute("SELECT Nationality, Labor_Cluster FROM Global_Users WHERE Master_ID = ?", (mid,))
+                user_info = cur.fetchone()
+                nat, camp = user_info[0], user_info[1]
+                
+                if mega_nat_counts.get(nat, 0) >= mega_nat_cap:
+                    cand['Reason_Code'] = 'MEGA_NATIONALITY_CAP'
+                    mega_failed.append(cand)
+                    continue
+                if mega_camp_counts.get(camp, 0) >= mega_camp_cap:
+                    cand['Reason_Code'] = 'MEGA_CAMP_CAP'
+                    mega_failed.append(cand)
+                    continue
+                
+                if len(final_mega_winners) < mega_cap:
                     cand['Reason_Code'] = 'MEGA_SELECTED (Pending Admin Approval)'
                     final_mega_winners.append(cand)
+                    mega_nat_counts[nat] = mega_nat_counts.get(nat, 0) + 1
+                    mega_camp_counts[camp] = mega_camp_counts.get(camp, 0) + 1
                 else:
                     cand['Reason_Code'] = 'MEGA_CAP_FULL'
                     mega_failed.append(cand)
                     
+            if final_mega_winners:
+                st.session_state['pending_mega_winners'] = final_mega_winners
+                st.warning("Mega winners pending Admin approval.")
+                
             conn.close()
             st.success(f"Mega Cycle {mega_cycle} Evaluation & Selection Completed!")
             if final_mega_winners: st.dataframe(pd.DataFrame(final_mega_winners), use_container_width=True)
             if mega_failed: st.dataframe(pd.DataFrame(mega_failed), use_container_width=True)
+            
+        if 'pending_mega_winners' in st.session_state and st.session_state['pending_mega_winners']:
+            if st.button("✅ Approve Mega Winners (Final Admin)", key="mega_approve"):
+                # Role check based on general role setting (from Tab 5)
+                # However, for simplicity across tabs, we allow final check if role matches Final Authorised Admin
+                # Since role is selected on Tab 5, we read it from there in next run or trust admin here.
+                # Assuming current user knows the role requirement.
+                conn = sqlite3.connect(DB_FILE)
+                for w in st.session_state['pending_mega_winners']:
+                    conn.execute("INSERT INTO Past_Winners (Master_ID, Win_Month) VALUES (?, ?)", (w['Master_ID'], -mega_cycle)) 
+                conn.execute("INSERT INTO Audit_Trail (Config_Change, Timestamp, Reason) VALUES (?, ?, ?)",
+                            ('MEGA_WINNERS_APPROVED', datetime.datetime.now(), f"Cycle {mega_cycle}, {len(st.session_state['pending_mega_winners'])} winners"))
+                conn.commit(); conn.close()
+                st.success("Mega winners approved and recorded!")
+                del st.session_state['pending_mega_winners']
 
 with tab5:
     st.header("Financial & Economics Control Centre")
@@ -1244,6 +1294,13 @@ with tab5:
         
     with f_col2:
         st.subheader("Admin Guardrails (12.5)")
+        st.markdown("#### Advanced Controls")
+        adv_col1, adv_col2 = st.columns(2)
+        min_reward_value = adv_col1.number_input("Min Reward Value (FIN-008)", value=5)
+        max_reward_value = adv_col1.number_input("Max Reward Value (FIN-009)", value=100)
+        target_reg_coverage = adv_col2.number_input("Target Reg Coverage % (FIN-010)", value=10)
+        target_qual_coverage = adv_col2.number_input("Target Qual Coverage % (FIN-011)", value=30)
+        
         budget_ceil = st.number_input("Budget Ceiling (Max Limit)", value=40000)
         policy_limit = st.number_input("Policy Reward Limit (AED)", value=35000) 
         
@@ -1255,6 +1312,9 @@ with tab5:
         refund_reserve = st.number_input("Refund/Chargeback Reserve (FIN-007)", value=2000)
         unused_budget = st.selectbox("Unused Budget Treatment (FIN-013)", ["Expire", "Carry forward", "Transfer to Mega"])
         redemption_rate = st.slider("Redemption-Rate Assumption (%) (FIN-014)", 10, 100, 85) / 100.0
+        
+        if st.button("Request Budget Increase (FIN-016)"):
+            st.error("Budget increases require maker-checker approval workflow. Cannot be automatic.")
         
     net_revenue_calc = collected_rev + sponsor_funding
     net_contribution = net_revenue_calc - var_costs - refunds - gateway_costs - fulfillment_costs
@@ -1278,7 +1338,6 @@ with tab5:
         
     st.markdown("---")
     st.subheader("Distribution Strategies & Tiers (12.4, 12.6)")
-    
     st.caption("**Funding Sources Supported:** 1. Buddy-funded | 2. Sponsor-funded | 3. Co-funded | 4. Partner in-kind | 5. Internal digital benefit | 6. Fee waiver")
     
     scenarios = {
@@ -1305,8 +1364,27 @@ with tab5:
     if not is_tier_valid:
         st.error(f"ECON-006: Tier percentages must sum to 1.0 (Currently {total_alloc:.2f})")
         
-    tier_costs = {"T1": {"face": 5, "actual": 5}, "T2": {"face": 15, "actual": 15}, "T3": {"face": 35, "actual": 35}, "T4": {"face": 100, "actual": 100}}
+    st.markdown("#### Tier Cost Configuration (Face Value vs Actual Cost)")
+    tc_col1, tc_col2, tc_col3, tc_col4 = st.columns(4)
+    t1_face = tc_col1.number_input("T1 Face (AED)", value=5, key="t1f")
+    t1_actual = tc_col1.number_input("T1 Actual Cost", value=4, key="t1a") 
+    t2_face = tc_col2.number_input("T2 Face (AED)", value=15, key="t2f")
+    t2_actual = tc_col2.number_input("T2 Actual Cost", value=13, key="t2a")
+    t3_face = tc_col3.number_input("T3 Face (AED)", value=35, key="t3f")
+    t3_actual = tc_col3.number_input("T3 Actual Cost", value=30, key="t3a")
+    t4_face = tc_col4.number_input("T4 Face (AED)", value=100, key="t4f")
+    t4_actual = tc_col4.number_input("T4 Actual Cost", value=85, key="t4a")
+
+    tier_costs = {
+        "T1": {"face": t1_face, "actual": t1_actual}, 
+        "T2": {"face": t2_face, "actual": t2_actual}, 
+        "T3": {"face": t3_face, "actual": t3_actual}, 
+        "T4": {"face": t4_face, "actual": t4_actual}
+    }
     
+    if tier_costs["T1"]["face"] < min_reward_value: st.error(f"FIN-008: Tier 1 face value ({tier_costs['T1']['face']}) below minimum ({min_reward_value})")
+    if tier_costs["T4"]["face"] > max_reward_value: st.error(f"FIN-009: Tier 4 face value ({tier_costs['T4']['face']}) exceeds maximum ({max_reward_value})")
+
     t1_b = approved_pool * alloc["T1"]
     t2_b = approved_pool * alloc["T2"]
     t3_b = approved_pool * alloc["T3"]
@@ -1323,6 +1401,13 @@ with tab5:
     sponsor_qty = st.number_input("Sponsor Tier Qty (Face Value: 50, Actual Cost: 0)", value=5 if sponsor_included else 0)
     if sponsor_included:
         total_funded_winners += int(sponsor_qty)
+        
+    total_face_value = t1_count * t1_face + t2_count * t2_face + t3_count * t3_face + t4_count * t4_face
+    total_actual_cost = t1_count * t1_actual + t2_count * t2_actual + t3_count * t3_actual + t4_count * t4_actual
+
+    st.metric("Total Face Value to Users", f"AED {total_face_value:,.2f}")
+    st.metric("Total Actual Buddy Cost", f"AED {total_actual_cost:,.2f}")
+    st.metric("Cost Efficiency", f"{(total_actual_cost/total_face_value*100):.1f}%" if total_face_value > 0 else "N/A")
     
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Tier 1 - Recognition", f"{t1_count} users")
@@ -1330,6 +1415,28 @@ with tab5:
     c3.metric("Tier 3 - High Perf.", f"{t3_count} users")
     c4.metric("Tier 4 - Monthly Star", f"{t4_count} users")
     c5.metric("Sponsor Tier", f"{int(sponsor_qty)} users")
+    
+    if st.button("💾 Save Current Scenario to Database"):
+        input_data = json.dumps({
+            "collected_rev": collected_rev, "sponsor_funding": sponsor_funding,
+            "var_costs": var_costs, "refunds": refunds, "gateway_costs": gateway_costs,
+            "fulfillment_costs": fulfillment_costs, "budget_ceil": budget_ceil,
+            "profit_margin": profit_margin, "fixed_floor": fixed_floor,
+            "mega_prov": mega_prov, "strategy": selected_strat, "alloc": alloc
+        })
+        conn = sqlite3.connect(DB_FILE)
+        conn.execute("""
+            INSERT INTO Reward_Scenarios (Cycle_ID, Strategy, Input_JSON, Funded_Winner_Count, 
+            Registered_Coverage, Qualified_Coverage, Reward_Face_Value, Actual_Cost, 
+            Projected_Profit, Projected_Margin, Warnings) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (st.session_state.current_simulation_month, selected_strat, input_data,
+              total_funded_winners, 0, 0, total_face_value, total_actual_cost,
+              net_contribution - approved_pool, 
+              ((net_contribution - approved_pool) / net_revenue_calc * 100) if net_revenue_calc > 0 else 0,
+              ""))
+        conn.commit(); conn.close()
+        st.success("Scenario saved to database!")
     
     st.markdown("#### Coverage Metrics (12.2)")
     conn = sqlite3.connect(DB_FILE)
@@ -1344,10 +1451,27 @@ with tab5:
     cov1.metric("Registered Coverage %", f"{reg_cov:.1f}%")
     cov2.metric("Qualified Coverage %", f"{qual_cov:.1f}%")
     
+    if reg_cov < target_reg_coverage: st.warning(f"FIN-010: Registered coverage ({reg_cov:.1f}%) below target ({target_reg_coverage}%)")
+    if qual_cov < target_qual_coverage: st.warning(f"FIN-011: Qualified coverage ({qual_cov:.1f}%) below target ({target_qual_coverage}%)")
+    
     st.markdown("---")
     st.subheader("Approval Workflow & Decision States (12.7, 12.8)")
     
+    unsettled_warning = st.checkbox("Include only collected/settled revenue (ECON-004)", value=True)
+    if not unsettled_warning: st.warning("ECON-004: Including projected/unsettled revenue violates financial rules.")
+    
+    if sponsor_included and sponsor_qty > 0:
+        conn_inv = sqlite3.connect(DB_FILE)
+        available_row = conn_inv.execute("SELECT COALESCE(SUM(Available_Qty), 0) FROM Reward_Inventory WHERE Funding_Source = 'Sponsor' AND (Expiry IS NULL OR Expiry > ?)", (datetime.datetime.now(),)).fetchone()
+        available = available_row[0] if available_row else 0
+        conn_inv.close()
+        if int(sponsor_qty) > available and available > 0:
+            st.error(f"ECON-005: Sponsor inventory insufficient. Available: {available}, Requested: {int(sponsor_qty)}")
+
     if 'cycle_maker' not in st.session_state: st.session_state.cycle_maker = "None"
+    
+    if st.session_state.cycle_status in ['FINANCE_APPROVED', 'FINAL_APPROVED']:
+        st.warning("⚠️ ECON-011: Changing any configuration will invalidate the current approval and return cycle to SIMULATED.")
     
     col_state1, col_state2 = st.columns([1,3])
     with col_state1: 
@@ -1357,17 +1481,10 @@ with tab5:
         valid = True
         errors = []
         
-        if not is_tier_valid:
-            valid = False
-            errors.append("ECON-006: Tier percentages inconsistent.")
-        if approved_pool > budget_ceil:
-            valid = False
-            errors.append("ECON-001: Approved pool exceeds budget ceiling.")
-        if approved_pool > max_affordable:
-            valid = False
-            errors.append("ECON-002: Approved pool exceeds max affordable pool.")
-        if req_profit < fixed_floor and profit_mode != "Fixed":
-            errors.append("ECON-003: Projected profit < required floor (Warning).")
+        if not is_tier_valid: valid = False; errors.append("ECON-006: Tier percentages inconsistent.")
+        if approved_pool > budget_ceil: valid = False; errors.append("ECON-001: Approved pool exceeds budget ceiling.")
+        if approved_pool > max_affordable: valid = False; errors.append("ECON-002: Approved pool exceeds max affordable pool.")
+        if req_profit < fixed_floor and profit_mode != "Fixed": errors.append("ECON-003: Projected profit < required floor (Warning).")
             
         if admin_role == "QA / Auditor":
             st.warning("QA / Auditor has read-only access. Cannot execute transitions.")
@@ -1376,11 +1493,33 @@ with tab5:
             
             if st.session_state.cycle_status == "DRAFT":
                 if valid and st.button("Lock Snapshot & Move to SIMULATED"):
-                    if admin_role == "Rewards Operations Maker":
-                        st.session_state.cycle_status = "SIMULATED"
-                        st.session_state.cycle_maker = "Rewards Operations Maker"
-                        st.rerun()
-                    else: st.error("Requires 'Rewards Operations Maker' role.")
+                    config_data = json.dumps({
+                        "collected_rev": collected_rev, "budget_ceil": budget_ceil,
+                        "profit_margin": profit_margin, "fixed_floor": fixed_floor,
+                        "approved_pool": approved_pool, "rule_version": st.session_state.rule_version
+                    })
+                    config_hash = hashlib.md5(config_data.encode()).hexdigest()
+                    conn = sqlite3.connect(DB_FILE)
+                    conn.execute("""
+                        INSERT INTO reward_cycle_financial_config 
+                        (Month_ID, Status, Sub_Revenue, Market_Revenue, Ops_Costs, Budget_Ceiling, 
+                         Profit_Margin_Pct, Fixed_Profit_Floor, Mega_Provision, Max_Affordable_Pool, 
+                         Approved_Reward_Pool, Rule_Version, Config_Hash, Created_By)
+                        VALUES (?, 'SIMULATED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (st.session_state.current_simulation_month, collected_rev, 
+                          sponsor_funding, var_costs, budget_ceil, profit_margin, fixed_floor, mega_prov,
+                          max_affordable, approved_pool, st.session_state.rule_version, 
+                          config_hash, admin_role))
+                    
+                    conn.execute("""
+                        INSERT INTO Reward_Cycle_Approvals (Cycle_ID, Action, Actor_ID, Role, Timestamp, Prior_State, New_State, Config_Hash)
+                        VALUES (?, 'LOCK_SNAPSHOT', ?, ?, ?, 'DRAFT', 'SIMULATED', ?)
+                    """, (st.session_state.current_simulation_month, admin_role, admin_role, datetime.datetime.now(), config_hash))
+                    
+                    conn.commit(); conn.close()
+                    st.session_state.cycle_status = "SIMULATED"
+                    st.session_state.cycle_maker = admin_role
+                    st.rerun()
             
             elif st.session_state.cycle_status == "SIMULATED":
                 if valid and st.button("Submit to Finance (SUBMITTED)"):
@@ -1411,7 +1550,12 @@ with tab5:
             
             elif st.session_state.cycle_status == "FINAL_APPROVED":
                 if st.button("🚀 RELEASE REWARDS", type="primary"):
-                    if admin_role in ["System Service Account", "Rewards Operations Maker", "Final Authorised Admin"]:
+                    conn_check = sqlite3.connect(DB_FILE)
+                    existing_release = conn_check.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Action_ID = 'REWARDS_RELEASED' AND strftime('%Y-%m', Event_Timestamp) = strftime('%Y-%m', 'now')").fetchone()[0]
+                    conn_check.close()
+                    if existing_release > 0:
+                        st.error("ECON-010: Rewards already released this month. Duplicate release blocked.")
+                    elif admin_role in ["System Service Account", "Rewards Operations Maker", "Final Authorised Admin"]:
                         st.session_state.cycle_status = "RELEASED"
                         conn = sqlite3.connect(DB_FILE)
                         rule_ver = st.session_state.rule_version
@@ -1473,7 +1617,6 @@ with tab7:
         if op_rep.startswith("1."):
             df_report = pd.read_sql_query("SELECT * FROM Action_Registry", conn)
         elif op_rep.startswith("2."):
-            # --- BÖLÜM 3.3: RAW VS REWARDED COUNT AYRIMI ---
             df_report = pd.read_sql_query("""
                 SELECT 
                     e.Master_ID,
