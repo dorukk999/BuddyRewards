@@ -112,7 +112,6 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12               
 }
 
-# --- BÖLÜM 13: KAPSAMLI REASON CODES ---
 REASON_CODES = {
     "Eligibility": ["HABIT_VIDEO_MIN_FAILED", "HABIT_QUIZ_MIN_FAILED", "REFERRAL_MIN_FAILED", "ROLE_GATE_FAILED", "INTEGRITY_FAILED"],
     "Validation": ["PROOF_MISSING", "POD_INVALID", "DUPLICATE_PROVIDER", "INVALID_TRIP", "OUTCOME_NOT_CONFIRMED"],
@@ -124,7 +123,7 @@ REASON_CODES = {
 }
 FLAT_REASON_CODES = [code for category in REASON_CODES.values() for code in category]
 
-# --- DATABASE INITIALIZATION (DECIMAL & NON-FUNCTIONAL FIXES) ---
+# --- DATABASE INITIALIZATION ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -284,6 +283,11 @@ def init_db():
 
 init_db()
 
+# --- CSV EXPORT HELPER ---
+@st.cache_data
+def convert_df_to_csv(df):
+    return df.to_csv(index=False).encode('utf-8')
+
 # --- CORE ENGINE FUNCTIONS ---
 def expire_events():
     conn = sqlite3.connect(DB_FILE)
@@ -381,10 +385,11 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             conn.commit(); conn.close()
             return 'BLOCKED (Duplication)', 0, "Action Rejected: Cross-role duplication block."
 
+    # --- BÖLÜM 16: CAPPED STATUS FIX ---
     if action_id in ['WORKER_VIDEO_WATCH', 'WORKER_QUIZ_ATTEMPT', 'PASS_QUIZ']:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND date(Event_Timestamp) = date(?) AND Process_Status NOT IN ('REVERSED', 'DISPUTED')", (master_id, action_id, now))
         if cursor.fetchone()[0] >= 1: 
-            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'CAPPED', Reason_Code = 'DAILY_CAP_REACHED' WHERE Event_ID = ?", (last_event_id,))
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE', Reason_Code = 'DAILY_CAP_REACHED', Cap_Cooldown_Result = 'CAPPED' WHERE Event_ID = ?", (last_event_id,))
             conn.commit(); conn.close()
             return 'CAPPED', 0, "Daily frequency cap (1/day) reached. Raw event logged, 0 points."
 
@@ -410,9 +415,10 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
         conn.commit(); conn.close()
         return 'BLOCKED (Cooldown)', 0, "Action Rejected (Blocked by cooldown or duplicate record limits)."
 
-    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED')", (master_id, action_id, current_month_str))
+    # --- BÖLÜM 16: CAPPED STATUS FIX ---
+    cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Action_ID = ? AND strftime('%Y-%m', Event_Timestamp) = ? AND Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'SETTLED', 'DISPUTED') AND Cap_Cooldown_Result IS NULL", (master_id, action_id, current_month_str))
     if cursor.fetchone()[0] >= monthly_cap:
-        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'EXPIRED', Reason_Code = 'MONTHLY_CAP_REACHED' WHERE Event_ID = ?", (last_event_id,))
+        cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'ELIGIBLE', Reason_Code = 'MONTHLY_CAP_REACHED', Cap_Cooldown_Result = 'CAPPED' WHERE Event_ID = ?", (last_event_id,))
         status, points, msg_string = 'CAPPED', 0, f"Monthly quota ({monthly_cap}) reached. Action processed (0 points)."
     else:
         status, points, msg_string = 'VALIDATING', base_points, f"⏳ Action received & eligible. {base_points} points waiting in 'VALIDATING' status."
@@ -472,7 +478,6 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
     if not event: return False, "Event not found."
     master_id, acting_role, action_id, points, current_status = event
     
-    # --- BÖLÜM 15: IDEMPOTENCY ---
     if current_status == target_status:
         return False, "Idempotency Protection: Target state is the same as current state."
     
@@ -481,7 +486,9 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
         'VALIDATED': ['OUTCOME_CONFIRMED', 'DISPUTED', 'REVERSED'],
         'OUTCOME_CONFIRMED': ['SETTLED', 'DISPUTED', 'REVERSED'],
         'DISPUTED': ['SETTLED', 'REVERSED'],
-        'SETTLED': ['REVERSED'] 
+        'SETTLED': ['REVERSED'],
+        'RECEIVED': ['VALIDATING', 'ELIGIBLE', 'REVERSED'],
+        'ELIGIBLE': ['VALIDATING', 'REVERSED']
     }
 
     if target_status not in valid_transitions.get(current_status, []):
@@ -540,13 +547,11 @@ def get_normalized_weights(has_sub, has_cert):
 # --- STREAMLIT DASHBOARD UI ---
 st.title("🌐 Buddy Rewards - Ultimate Ecosystem Engine")
 
-# --- BÖLÜM 14: YENİ SEKMELER VE RAPORLAR EKLENDİ ---
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["⚙️ Setup", "👥 Users", "🚀 Actions", "🏆 Mega & Fairness", "💰 Finance & Economics", "📜 Logs", "📊 Reports"])
 
 with tab1:
     st.header("System Dynamics & Universal Registry")
     
-    # 14.1 SIMULATOR KONTROLLERİ
     st.subheader("Simulation & Configuration Controls")
     ctrl_col1, ctrl_col2, ctrl_col3 = st.columns(3)
     
@@ -593,7 +598,6 @@ with tab1:
 with tab2:
     st.header("Ecosystem Actors & Security")
     
-    # 14.1 10,000+ SYNTHETIC USER DESTEĞİ EKLENDİ
     if st.button("🚀 Inject 10,000 Synthetic Users (Load Test)"):
         with st.spinner("Injecting 10,000 users... Please wait."):
             conn = sqlite3.connect(DB_FILE)
@@ -822,7 +826,9 @@ with tab4:
                     continue
                 
                 is_qualified = True
-                cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
+                
+                # BÖLÜM 16: CAPPED durumları artık Cap_Cooldown_Result içinde saklanıyor.
+                cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
                 counts = dict(cur.fetchall())
 
                 if role == 'Worker':
@@ -866,7 +872,7 @@ with tab4:
                     SELECT a.Category, COALESCE(SUM(e.Earned_Points), 0)
                     FROM Event_Stream_Logs e
                     JOIN Action_Registry a ON e.Action_ID = a.Action_ID
-                    WHERE e.Master_ID = ? AND e.Process_Status IN ('SETTLED', 'CAPPED')
+                    WHERE e.Master_ID = ? AND e.Process_Status = 'SETTLED'
                     GROUP BY a.Category
                 """, (mid,))
                 cat_points = dict(cur.fetchall())
@@ -882,17 +888,17 @@ with tab4:
                 w_sub = weights.get('Subscription', 0) / 100.0
                 w_cert = weights.get('Certification', 0) / 100.0
                 
-                base_score = (habit_pts * (1 + w_habit)) + \
-                             (ref_pts * (1 + w_ref)) + \
-                             (mkt_pts * (1 + w_mkt)) + \
-                             (trust_pts * (1 + w_sub + w_cert))
+                base_score = float(habit_pts * (1 + w_habit)) + \
+                             float(ref_pts * (1 + w_ref)) + \
+                             float(mkt_pts * (1 + w_mkt)) + \
+                             float(trust_pts * (1 + w_sub + w_cert))
 
                 qualified_pool.append({
                     'Master_ID': mid, 
                     'Nationality': u['Nationality'], 
                     'Camp': u['Labor_Cluster'], 
                     'Location': u['Location'],
-                    'Final_Score': round(base_score + u['Rollover_Bonus'], 2)
+                    'Final_Score': round(base_score + float(u['Rollover_Bonus']), 2)
                 })
                 
             qualified_pool.sort(key=lambda x: x['Final_Score'], reverse=True)
@@ -1030,7 +1036,7 @@ with tab4:
                     if cur.fetchone()[0] > 0: fail_reason = 'MEGA_MONTHLY_WINNER_EXCLUDED'
                         
                 if not fail_reason:
-                    cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
+                    cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
                     counts = dict(cur.fetchall())
                     for req_a, req_t in MEGA_TARGETS.items():
                         if counts.get(req_a, 0) < req_t: fail_reason = 'MEGA_COUNTS_FAILED'; break
@@ -1038,9 +1044,9 @@ with tab4:
                 if fail_reason: 
                     mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
                 else: 
-                    cur.execute("SELECT COALESCE(SUM(Earned_Points), 0) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED')", (mid,))
+                    cur.execute("SELECT COALESCE(SUM(Earned_Points), 0) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status='SETTLED'", (mid,))
                     base_mega_score = cur.fetchone()[0]
-                    mega_qualified.append({'Master_ID': mid, 'Mega_Score': base_mega_score, 'Reason_Code': 'MEGA_APPROVED'})
+                    mega_qualified.append({'Master_ID': mid, 'Mega_Score': float(base_mega_score), 'Reason_Code': 'MEGA_APPROVED'})
             
             mega_qualified.sort(key=lambda x: x['Mega_Score'], reverse=True)
             
@@ -1301,6 +1307,7 @@ with tab7:
     
     report_cat = st.radio("Report Category:", ["Operational Reports (14.2)", "Financial Reports (14.3)"], horizontal=True)
     conn = sqlite3.connect(DB_FILE)
+    df_report = pd.DataFrame()
     
     if report_cat == "Operational Reports (14.2)":
         op_rep = st.selectbox("Select Report:", [
@@ -1310,23 +1317,23 @@ with tab7:
         ])
         
         if op_rep.startswith("1."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Action_Registry", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Action_Registry", conn)
         elif op_rep.startswith("2."):
-            st.dataframe(pd.read_sql_query("SELECT Master_ID, Role_Ledger, Pending_Points, Settled_Points, Reversed_Points, Rule_Version FROM Reward_Ledgers", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT Master_ID, Role_Ledger, Pending_Points, Settled_Points, Reversed_Points, Rule_Version FROM Reward_Ledgers", conn)
         elif op_rep.startswith("3."):
-            st.dataframe(pd.read_sql_query("SELECT Acting_Role, COUNT(*) as Total_Actions, SUM(Earned_Points) as Total_Points_Earned FROM Event_Stream_Logs GROUP BY Acting_Role", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT Acting_Role, COUNT(*) as Total_Actions, SUM(Earned_Points) as Total_Points_Earned FROM Event_Stream_Logs GROUP BY Acting_Role", conn)
         elif op_rep.startswith("4."):
-            st.dataframe(pd.read_sql_query("SELECT Master_ID, Total_Score, Rollover_Bonus FROM Monthly_Qualified_Users", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT Master_ID, Total_Score, Rollover_Bonus FROM Monthly_Qualified_Users", conn)
         elif op_rep.startswith("5."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Past_Winners", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Past_Winners", conn)
         elif op_rep.startswith("6."):
-            st.dataframe(pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users", conn)
         elif op_rep.startswith("7."):
-            st.dataframe(pd.read_sql_query("SELECT Master_ID, Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Integrity_Score < 100 OR Action_Status != 'Normal' OR Critical_Flag = 1", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT Master_ID, Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Integrity_Score < 100 OR Action_Status != 'Normal' OR Critical_Flag = 1", conn)
         elif op_rep.startswith("8."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Event_Stream_Logs WHERE Process_Status = 'REVERSED'", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Event_Stream_Logs WHERE Process_Status = 'REVERSED'", conn)
         elif op_rep.startswith("9."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Audit_Trail", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Audit_Trail", conn)
 
     else:
         fin_rep = st.selectbox("Select Report:", [
@@ -1336,22 +1343,27 @@ with tab7:
         ])
         
         if fin_rep.startswith("1."):
-            st.dataframe(pd.read_sql_query("SELECT Cycle_ID, Month_ID, Status, Sub_Revenue, Market_Revenue, Ops_Costs, Budget_Ceiling, Profit_Margin_Pct, Fixed_Profit_Floor, Max_Affordable_Pool, Approved_Reward_Pool FROM reward_cycle_financial_config", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT Cycle_ID, Month_ID, Status, Sub_Revenue, Market_Revenue, Ops_Costs, Budget_Ceiling, Profit_Margin_Pct, Fixed_Profit_Floor, Max_Affordable_Pool, Approved_Reward_Pool FROM reward_cycle_financial_config", conn)
         elif fin_rep.startswith("2."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Qualified_User_Funding", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Qualified_User_Funding", conn)
         elif fin_rep.startswith("3."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Inventory", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Reward_Inventory", conn)
         elif fin_rep.startswith("4."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Tier_Allocations", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Reward_Tier_Allocations", conn)
         elif fin_rep.startswith("5."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Scenarios", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Reward_Scenarios", conn)
         elif fin_rep.startswith("6."):
             st.info("No breaches logged in current session.")
         elif fin_rep.startswith("7."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Financial_Outcomes", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Reward_Financial_Outcomes", conn)
         elif fin_rep.startswith("8."):
             st.info("Mega Provision opening reserve and usage will appear here during cycle close.")
         elif fin_rep.startswith("9."):
-            st.dataframe(pd.read_sql_query("SELECT * FROM Reward_Cycle_Approvals", conn), use_container_width=True)
+            df_report = pd.read_sql_query("SELECT * FROM Reward_Cycle_Approvals", conn)
+            
+    if not df_report.empty:
+        st.dataframe(df_report, use_container_width=True)
+        # P3 EXPORT (XLSX/PDF/CSV) - Eklenen Kod
+        st.download_button(label="📥 Export to CSV", data=convert_df_to_csv(df_report), file_name="report.csv", mime='text/csv')
             
     conn.close()
