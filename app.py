@@ -21,37 +21,84 @@ if 'cycle_status' not in st.session_state:
 
 # --- UNIVERSAL ACTION REGISTRY ---
 UNIVERSAL_ACTION_REGISTRY = [
-    ("Worker", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
-    ("Worker", "WORKER_QUIZ_ATTEMPT", "Retention", 5, 1440, 0, True, 30),
-    ("Worker", "WORKER_REFERRAL", "Growth", 10, 0, +2, True, 50),
-    ("Worker", "SUPPLIER_ADDED", "Growth", 20, 60, +5, True, 10),      
-    ("Worker", "FULFILL_VALIDATED", "Trust", 40, 0, +10, True, 20),    
-    ("Worker", "BUDDY_HELP", "Trigger", 10, 120, +5, True, 10),        
+    # 2.1 & 2.2 Genel / Ortak Aksiyonlar & Rol Kapsamı Genişletilenler
+    ("Worker, Captain, Champion", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
+    ("All", "WORKER_QUIZ_ATTEMPT", "Retention", 5, 1440, 0, True, 30),
+    ("All", "PASS_QUIZ", "Quality", 2, 1440, 0, False, 30),
+    ("All", "WORKER_REFERRAL", "Growth", 10, 0, +2, True, 15),
+    ("Worker, Captain, Champion, Contractor", "SUPPLIER_ADDED", "Growth", 20, 60, +5, True, 5),
+    ("Worker, Champion, Contractor", "TRANSPORTER_ADDED", "Growth", 20, 60, +5, True, 5),
+    ("Worker, Captain, Champion", "BUDDY_HELP", "Community", 10, 120, +5, True, 5),
+    ("All", "EID_KYC_VERIFIED", "Trust", 100, 0, 0, True, 1),
+    ("All", "CERTIFICATION_COMPLETED", "Trust", 100, 0, 0, True, 1),
+    ("All", "SUBSCRIPTION_PAID", "Trust", 50, 0, 0, True, 1),
+    ("All", "REQ_SHARE_SENT", "Propagation", 2, 0, 0, False, 300),
+    ("All", "REQ_SHARE_OPENED", "Propagation", 5, 0, 0, False, 999),
+    ("All", "REQ_SHARE_ENGAGED", "Propagation", 10, 0, 0, False, 999),
+    ("All", "SHARE_CHAIN_FULFILLED", "Outcome", 50, 0, 0, True, 999),
     
-    ("Supplier", "PROFILE", "Trigger", 5, 0, +1, False, 5),
-    ("Supplier", "QUOTE", "Response", 10, 60, +2, False, 50),
-    ("Supplier", "FULFILLMENT", "Completion", 40, 0, +10, False, 100),
+    # Mevcut Özel Durum (Worker spesifik)
+    ("Worker", "FULFILL_VALIDATED", "Trust", 40, 0, +10, True, 20),
     
-    ("Contractor", "POST_REQ", "Trigger", 20, 30, 0, False, 50),
-    ("Contractor", "VALIDATE", "Trust", 40, 0, +15, False, 100),
+    # 2.3 Contractor Aksiyonları
+    ("Contractor", "POST_REQ", "Trigger", 20, 30, 0, False, 10),
+    ("Contractor", "CLONE_REQ", "Trigger", 10, 0, 0, False, 5),
+    ("Contractor", "RESPOND_FIRST_BID", "Response", 5, 0, 0, False, 50),
+    ("Contractor", "ACCEPT_BID", "Conversion", 20, 0, 0, False, 10),
+    ("Contractor", "VALIDATE", "Completion", 20, 0, +15, False, 10),
+    ("Contractor", "CLOSE_REQ", "Completion", 10, 0, 0, False, 10),
+    ("Contractor", "RATE_COUNTERPARTY", "Trust", 5, 0, 0, False, 50),
+    ("Contractor", "PAY_ON_TIME", "Trust", 15, 0, 0, False, 10),
     
-    ("Transporter", "RETURN_TRIP", "Propagation", 15, 120, +5, False, 30),
-    ("Transporter", "MULTI_PICKUP", "Propagation", 20, 60, +5, False, 30),
-    ("Transporter", "DELIVERY", "Completion", 40, 0, +10, False, 50),
+    # 2.4 Supplier Aksiyonları
+    ("Supplier", "PROFILE", "Activation", 20, 129600, +1, False, 1),
+    ("Supplier", "UPDATE_CATALOGUE", "Retention", 5, 0, 0, False, 4),
+    ("Supplier", "QUOTE", "Response", 10, 60, +2, False, 20),
+    ("Supplier", "RESPOND_BID_SLA", "Quality", 5, 0, 0, False, 20),
+    ("Supplier", "BID_SELECTED", "Conversion", 15, 0, 0, False, 10),
+    ("Supplier", "FULFILLMENT", "Completion", 40, 0, +10, False, 10),
+    ("Supplier", "ON_TIME_DELIVERY", "Quality", 10, 0, 0, False, 10),
+    ("Supplier", "UPLOAD_POD", "Trust", 5, 0, 0, False, 10),
+    ("Supplier", "DISPUTE_FREE_SETTLEMENT", "Trust", 10, 0, 0, False, 10),
     
-    ("Captain", "VERIFY_SIGNUP", "Growth", 2, 0, +2, False, 100),
-    ("Captain", "ACTIVE_CLUSTER", "Trust", 25, 1440, +10, False, 5),
-    ("Captain", "USER_ACTIVE", "Retention", 10, 0, +2, False, 100),
-    ("Captain", "WORKER_RETAINED", "Retention", 15, 0, +5, False, 100),
+    # 2.5 Transporter Aksiyonları
+    ("Transporter", "SET_CAPACITY", "Trigger", 5, 720, 0, False, 60),
+    ("Transporter", "RETURN_TRIP", "Trigger", 15, 120, +5, False, 20),
+    ("Transporter", "ACCEPT_BACKHAUL", "Response", 15, 0, 0, False, 10),
+    ("Transporter", "MULTI_PICKUP", "Trigger", 10, 0, +5, False, 30),
+    ("Transporter", "COMPLETE_BUNDLED_TRIP", "Completion", 20, 0, 0, False, 8),
+    ("Transporter", "DELIVERY", "Completion", 40, 0, +10, False, 15),
+    ("Transporter", "UPLOAD_POD_TRANS", "Trust", 5, 0, 0, False, 15),
+    ("Transporter", "MEET_SLA", "Quality", 10, 0, 0, False, 15),
+    ("Transporter", "REDUCE_EMPTY_KM", "Efficiency", 25, 0, 0, False, 8),
+    ("Transporter", "COMPETITIVE_PRICE", "Efficiency", 10, 0, 0, False, 10),
+    ("Transporter", "DISPUTE_FREE_TRIP", "Trust", 10, 0, 0, False, 15),
+    
+    # 2.6 Champion Aksiyonları
+    ("Champion", "DEMAND_CREATED", "Trigger", 20, 60, +5, False, 10),
+    ("Champion", "REQ_PROPAGATED", "Propagation", 10, 0, 0, False, 20),
+    ("Champion", "SUPPLIER_ACTIVATED", "Activation", 15, 0, 0, False, 10),
+    ("Champion", "TRANSPORTER_ACTIVATED", "Activation", 15, 0, 0, False, 10),
+    ("Champion", "CONTRACTOR_ACTIVATED", "Activation", 15, 0, 0, False, 10),
+    ("Champion", "NUDGE_VALID_BID", "Response", 10, 0, 0, False, 20),
+    ("Champion", "ACHIEVE_3_5_BIDS", "Liquidity", 25, 0, 0, False, 10),
+    ("Champion", "RESOLVE_UNMET_DEMAND", "Completion", 35, 0, 0, False, 10),
+    ("Champion", "CLOSURE", "Completion", 50, 0, +20, False, 10),
+    ("Champion", "ACTIVATE_BACKHAUL", "Logistics", 20, 0, 0, False, 10),
+    ("Champion", "REACTIVATE_PROVIDER", "Retention", 15, 0, 0, False, 10),
+    ("Champion", "IMPROVE_BID_SLA", "Quality", 10, 0, 0, False, 10),
+    
+    # 2.7 Captain Aksiyonları
+    ("Captain", "VERIFY_SIGNUP", "Growth", 2, 0, +2, False, 999),
+    ("Captain", "ACTIVE_CLUSTER", "Trust", 25, 1440, +10, False, 1),
+    ("Captain", "USER_ACTIVE", "Retention", 10, 0, +2, False, 999),
+    ("Captain", "WORKER_RETAINED", "Retention", 15, 0, +5, False, 999),
     ("Captain", "HIGH_RETENTION_CLUSTER", "Trust", 40, 1440, +15, False, 1),
     ("Captain", "DAILY_TASK_ACTIVATION", "Retention", 5, 0, +1, False, 20),
     ("Captain", "SESSION_COMPLETED", "Community", 20, 1440, +5, False, 4),
     ("Captain", "INACTIVE_REACTIVATED", "Retention", 10, 0, +3, False, 20),
     ("Captain", "REFERRAL_RETAINED", "Growth", 15, 0, +4, False, 20),
-    ("Captain", "CAMP_CHALLENGE", "Community", 25, 1440, +5, False, 4),
-    
-    ("Champion", "DEMAND_CREATED", "Trigger", 20, 60, +5, False, 50),
-    ("Champion", "CLOSURE", "Completion", 50, 0, +20, False, 50)
+    ("Captain", "CAMP_CHALLENGE", "Community", 25, 1440, +5, False, 4)
 ]
 
 MEGA_TARGETS = {
@@ -114,7 +161,8 @@ def init_db():
         for act in UNIVERSAL_ACTION_REGISTRY:
             cursor.execute("INSERT INTO Action_Registry VALUES (?, ?, ?, ?, ?, ?, ?, ?)", act[1:2] + act[0:1] + act[2:])
             
-        roles_list = list(set([x[0] for x in UNIVERSAL_ACTION_REGISTRY if x[0] not in ['Captain', 'Champion']]))
+        # Çoklu rol desteğini bozmaması için ana roller manuel tanımlandı
+        roles_list = ['Worker', 'Contractor', 'Supplier', 'Transporter']
         nationalities = ['India', 'Egypt', 'Philippines', 'Turkey']
         clusters = ['Camp-A', 'Camp-B', 'Camp-C']
         
@@ -139,11 +187,9 @@ def init_db():
                             f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months))
             cursor.execute("INSERT INTO Integrity_Profiles (Master_ID) VALUES (?)", (mid,))
             
-            # --- THE SQLITE FIX IS HERE ---
             cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, primary_role))
             if secondary_roles:
                 cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, secondary_roles))
-            # ------------------------------
             
             cursor.execute("INSERT INTO Monthly_Qualified_Users VALUES (?, ?, ?)", (mid, 0, 0)) 
             
@@ -338,7 +384,8 @@ with tab3:
         st.subheader("1. Standard Action Trigger")
         roles = [u_info['Primary_Role']] + ([r.strip() for r in u_info['Secondary_Roles'].split(',')] if u_info['Secondary_Roles'] else [])
         a_role = st.radio("Active Role:", roles, horizontal=True)
-        acts = pd.read_sql_query(f"SELECT Action_ID FROM Action_Registry WHERE Role='{a_role}'", sqlite3.connect(DB_FILE))['Action_ID'].tolist()
+        # --- Çoklu Rol Sorgusu İçin Güncellendi ---
+        acts = pd.read_sql_query(f"SELECT Action_ID FROM Action_Registry WHERE Role LIKE '%{a_role}%' OR Role = 'All'", sqlite3.connect(DB_FILE))['Action_ID'].tolist()
         act = st.selectbox("Action Type:", acts)
         t_id = st.text_input("Target ID (Optional - For Nudge/Chain scenarios):")
         
@@ -375,12 +422,11 @@ with tab3:
         # --- İŞLEM BİLGİLENDİRME MESAJI ALANI ---
         if 'lifecycle_msg' in st.session_state and st.session_state.lifecycle_msg:
             st.success(st.session_state.lifecycle_msg)
-            st.session_state.lifecycle_msg = "" # Mesajı bir kez gösterdikten sonra temizle
+            st.session_state.lifecycle_msg = "" 
             
         if 'lifecycle_error' in st.session_state and st.session_state.lifecycle_error:
             st.error(st.session_state.lifecycle_error)
             st.session_state.lifecycle_error = ""
-        # ----------------------------------------
 
         conn = sqlite3.connect(DB_FILE)
         pending_val = pd.read_sql_query("SELECT Event_ID, Action_ID, Process_Status, Earned_Points FROM Event_Stream_Logs WHERE Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED')", conn)
@@ -398,9 +444,9 @@ with tab3:
             if l_col3.button("Execute Transition", use_container_width=True): 
                 success, msg = progress_event_lifecycle(int(l_ev_id), selected_target)
                 if success: 
-                    st.session_state.lifecycle_msg = f"🚀 {msg}" # Mesajı hafızaya yaz
+                    st.session_state.lifecycle_msg = f"🚀 {msg}"
                 else: 
-                    st.session_state.lifecycle_error = f"❌ {msg}" # Hatayı hafızaya yaz
+                    st.session_state.lifecycle_error = f"❌ {msg}"
                 st.rerun()
         else: st.write("No active events in pipeline.")
             
@@ -583,7 +629,7 @@ with tab5:
     with f_col2:
         st.subheader("Admin Guardrails")
         budget_ceil = st.number_input("Budget Ceiling (Max Limit)", value=40000)
-        policy_limit = st.number_input("Policy Reward Limit (AED)", value=35000) # --- RULE FIX 3: POLICY LIMIT ADDED ---
+        policy_limit = st.number_input("Policy Reward Limit (AED)", value=35000) 
         profit_margin = st.slider("Required Profit Margin (%)", 10, 50, 20)
         fixed_floor = st.number_input("Fixed Profit Floor (AED)", value=15000)
         mega_prov = st.number_input("Mega Rewards Provision (AED)", value=5000)
@@ -593,7 +639,6 @@ with tab5:
     req_profit = max(fixed_floor, (profit_margin / 100) * net_revenue)
     max_affordable = max(0, net_contribution - mega_prov - req_profit)
     
-    # --- RULE FIX 3: APPROVED POOL CALCULATION FIXED ---
     approved_pool = min(budget_ceil, max_affordable, policy_limit)
     
     with f_col3:
@@ -613,11 +658,9 @@ with tab5:
         "Growth (Widespread Adoption)": {"T1": 0.60, "T2": 0.30, "T3": 0.10} 
     }
     
-    # Kullanıcı seçimi
     selected_strat = st.radio("Choose Distribution Strategy:", list(scenarios.keys()), horizontal=True)
     alloc = scenarios[selected_strat]
     
-    # Hesaplama
     t1_b = approved_pool * alloc["T1"]
     t2_b = approved_pool * alloc["T2"]
     t3_b = approved_pool * alloc["T3"]
