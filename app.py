@@ -112,13 +112,16 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12               
 }
 
+# --- REASON CODES GÜNCELLEMESİ (BÖLÜM 10 EKLENDİ) ---
 REASON_CODES = [
     "APPROVED_CLEAN", "POD_INVALID", "ACTOR_FAULT", "DISPUTE_UPHELD", 
     "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED",
     "I01_DUPLICATE_IDENTITY", "I02_SELF_REFERRAL", "I03_FAKE_PROVIDER", "I04_FAKE_DEMAND",
     "I05_PAIR_FARMING", "I06_COLLUSION", "I07_VELOCITY_SPIKE", "I08_FAKE_ONBOARDING",
     "I09_FAKE_LIQUIDITY", "I10_BACKHAUL_FARMING", "I11_BUNDLE_MANIPULATION", "I12_KYC_MISMATCH",
-    "I13_POD_REUSE", "I14_RATING_MANIPULATION", "I15_ADMIN_ABUSE"
+    "I13_POD_REUSE", "I14_RATING_MANIPULATION", "I15_ADMIN_ABUSE",
+    "REQ_CANCELLED_INVALID", "BUYER_FAULT_CANCEL", "SUPPLIER_NON_FULFIL", 
+    "TRIP_CANCEL_ACTOR_FAULT", "POD_DISPUTED", "MEGA_POST_AWARD_REVIEW"
 ]
 
 # --- DATABASE INITIALIZATION ---
@@ -427,6 +430,23 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
             cursor.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
             
         reason_code = reason_code if reason_code else "FAILED_PROOF_OR_FRAUD"
+        
+        # --- BÖLÜM 10: SCENARIO-BASED REVERSAL & INTEGRITY IMPACT ---
+        penalty = 0
+        set_critical = False
+        if reason_code == 'SUPPLIER_NON_FULFIL': penalty = -15
+        elif reason_code == 'TRIP_CANCEL_ACTOR_FAULT': penalty = -10
+        elif reason_code == 'POST_SETTLEMENT_FRAUD': penalty = -20; set_critical = True
+        elif reason_code == 'MEGA_POST_AWARD_REVIEW': set_critical = True
+        
+        if penalty != 0 or set_critical:
+            cursor.execute("SELECT Integrity_Score, Critical_Flag FROM Integrity_Profiles WHERE Master_ID = ?", (master_id,))
+            s_row = cursor.fetchone()
+            if s_row:
+                new_score = min(100, max(0, s_row[0] + penalty))
+                is_crit = 1 if set_critical else s_row[1]
+                act_status = 'Block' if is_crit else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
+                cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ?, Critical_Flag = ? WHERE Master_ID = ?", (new_score, act_status, is_crit, master_id))
 
     cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = ?, Reason_Code = ? WHERE Event_ID = ?", (target_status, reason_code, event_id))
     conn.commit()
@@ -617,29 +637,22 @@ with tab4:
             cur = conn.cursor()
             curr_month = st.session_state.current_simulation_month
             
-            # --- HIZLI VERİ GİRİŞİ ENJEKTÖRÜ (BÖLÜM 8 TEST DESTEĞİ) ---
-            # Motor her çalıştığında, o aya ait 30 günlük eylem geçmişini işçilere otomatik yazar
             workers_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
             base_date = datetime.datetime.now()
             
             for w in workers_list[:5]:
-                # Günlük frequency limitlerine takılmamak için 30 güne yayarak eylemleri simüle ediyoruz
                 for day in range(30):
                     sim_date = base_date - datetime.timedelta(days=day)
-                    # Video İzleme (H01 - Her güne 1 adet)
                     cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5)", (w, sim_date))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                    # Quiz Çözme (H02 - Her güne 1 adet)
                     cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5)", (w, sim_date))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
                 
-                # Referanslar (G01 - Aylık 15 adet zorunlu kota)
                 for day in range(15):
                     sim_date = base_date - datetime.timedelta(days=day)
                     cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10)", (w, sim_date))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
             
-            # Diğer tüm rollere (Captain/Champion vb.) de survival gateleri geçebilmeleri için minik eylemler yazıyoruz
             now_ts = datetime.datetime.now()
             captains_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Captain%' OR Primary_Role='Captain'", conn)['Master_ID'].tolist()
             for c in captains_list:
@@ -652,7 +665,6 @@ with tab4:
                 cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Champion', 'DEMAND_CREATED', ?, 'SETTLED', 20)", (ch, now_ts))
                 cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Champion', 'CLOSURE', ?, 'SETTLED', 50)", (ch, now_ts))
                 cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 70 WHERE Master_ID=? AND Role_Ledger='Champion'", (ch,))
-            # --------------------------------------------------------
 
             users_df = pd.read_sql_query("""
                 SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, u.Location,
@@ -841,29 +853,38 @@ with tab4:
         m_excl = st.checkbox("Exclude Monthly Winners", value=True)
         m_grace = st.checkbox("Apply 1-Month Grace", value=False)
         
+        # --- BÖLÜM 9.1 & 9.2: MEGA DYNAMIC CONTROLS ---
+        mc_col1, mc_col2 = st.columns(2)
+        mega_cycle = mc_col1.selectbox("Mega Cycle:", [1, 2, 3], format_func=lambda x: f"Cycle {x} (M4-{x*6 if x<3 else 18})")
+        mega_cap = mc_col2.number_input("Mega Winner Cap:", min_value=1, value=3)
+        
         if st.button("Inject 6-Month Mega Data for ID-1", type="secondary"):
             conn, now = sqlite3.connect(DB_FILE), datetime.datetime.now()
             cur = conn.cursor()
             for a, t in MEGA_TARGETS.items():
                 for _ in range(t): cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status) VALUES ('ID-1', 'Worker', ?, ?, 'SETTLED')", (a, now))
-            cur.execute("UPDATE Global_Users SET EID_Verified=1, Has_Certification=1, Continuous_Paid_Months=6 WHERE Master_ID='ID-1'")
+            cur.execute("UPDATE Global_Users SET EID_Verified=1, Has_Certification=1, Continuous_Paid_Months=15 WHERE Master_ID='ID-1'")
             cur.execute("UPDATE Integrity_Profiles SET Integrity_Score=100, Action_Status='Normal', Critical_Flag=0 WHERE Master_ID='ID-1'")
             conn.commit()
             conn.close()
             st.success("Mega data injected for ID-1!")
 
-        if st.button("🚀 Run Mega Cycle Evaluation", type="primary"):
+        if st.button("🚀 Run Mega Qualification & Selection", type="primary"):
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
             workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users WHERE Primary_Role='Worker'", conn)
-            mega_winners, mega_failed = [], []
-            req_months = 5 if m_grace else 6 
+            mega_qualified, mega_failed = [], []
+            
+            # 9.1 Subscription Continuity 
+            if mega_cycle == 1: req_months = 2 if m_grace else 3
+            elif mega_cycle == 2: req_months = 8 if m_grace else 9
+            else: req_months = 14 if m_grace else 15
             
             for _, w in workers.iterrows():
                 mid, fail_reason = w['Master_ID'], None
                 if not w['EID_Verified']: fail_reason = 'MEGA_EID_FAILED'
                 elif m_cert and not w['Has_Certification']: fail_reason = 'MEGA_CERT_FAILED'
-                elif w['Continuous_Paid_Months'] < req_months: fail_reason = 'MEGA_SUBSCRIPTION_FAILED'
+                elif w['Continuous_Paid_Months'] < req_months: fail_reason = f'MEGA_SUBSCRIPTION_FAILED (<{req_months}m)'
                 else:
                     cur.execute("SELECT Integrity_Score, Action_Status, Critical_Flag FROM Integrity_Profiles WHERE Master_ID=?", (mid,))
                     i_score, i_status, c_flag = cur.fetchone()
@@ -877,13 +898,31 @@ with tab4:
                     cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
                     counts = dict(cur.fetchall())
                     for req_a, req_t in MEGA_TARGETS.items():
-                        if counts.get(req_a, 0) < req_t: fail_reason = 'MEGA_COUNTS_FAILED'; break
+                        if counts.get(req_a, 0) < req_t: fail_reason = f'MEGA_COUNTS_FAILED ({req_a})'; break
                             
-                if fail_reason: mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
-                else: mega_winners.append({'Master_ID': mid, 'Reason_Code': 'MEGA_APPROVED'})
+                if fail_reason: 
+                    mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
+                else: 
+                    # 9.3 Rollover'in Mega'ya Etkisi Yok - Sadece saf Base Score hesaplanıyor
+                    cur.execute("SELECT COALESCE(SUM(Earned_Points), 0) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED')", (mid,))
+                    base_mega_score = cur.fetchone()[0]
+                    mega_qualified.append({'Master_ID': mid, 'Mega_Score': base_mega_score, 'Reason_Code': 'QUALIFIED'})
+            
+            # 9.2 Mega Selection Engine
+            mega_qualified.sort(key=lambda x: x['Mega_Score'], reverse=True)
+            
+            final_mega_winners = []
+            for i, cand in enumerate(mega_qualified):
+                if i < mega_cap:
+                    cand['Reason_Code'] = 'MEGA_SELECTED (Pending Admin Approval)'
+                    final_mega_winners.append(cand)
+                else:
+                    cand['Reason_Code'] = 'MEGA_CAP_FULL'
+                    mega_failed.append(cand)
+                    
             conn.close()
-            st.success("Mega Cycle Evaluation Completed!")
-            if mega_winners: st.dataframe(pd.DataFrame(mega_winners), use_container_width=True)
+            st.success(f"Mega Cycle {mega_cycle} Evaluation & Selection Completed!")
+            if final_mega_winners: st.dataframe(pd.DataFrame(final_mega_winners), use_container_width=True)
             if mega_failed: st.dataframe(pd.DataFrame(mega_failed), use_container_width=True)
 
 with tab5:
