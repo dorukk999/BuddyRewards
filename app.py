@@ -21,7 +21,6 @@ if 'cycle_status' not in st.session_state:
 
 # --- UNIVERSAL ACTION REGISTRY ---
 UNIVERSAL_ACTION_REGISTRY = [
-    # 2.1 & 2.2 Genel / Ortak Aksiyonlar & Rol Kapsamı Genişletilenler
     ("Worker, Captain, Champion", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
     ("All", "WORKER_QUIZ_ATTEMPT", "Retention", 5, 1440, 0, True, 30),
     ("All", "PASS_QUIZ", "Quality", 2, 1440, 0, False, 30),
@@ -39,7 +38,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     
     ("Worker", "FULFILL_VALIDATED", "Trust", 40, 0, +10, True, 20),
     
-    # 2.3 Contractor Aksiyonları
     ("Contractor", "POST_REQ", "Trigger", 20, 30, 0, False, 10),
     ("Contractor", "CLONE_REQ", "Trigger", 10, 0, 0, False, 5),
     ("Contractor", "RESPOND_FIRST_BID", "Response", 5, 0, 0, False, 50),
@@ -49,7 +47,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Contractor", "RATE_COUNTERPARTY", "Trust", 5, 0, 0, False, 50),
     ("Contractor", "PAY_ON_TIME", "Trust", 15, 0, 0, False, 10),
     
-    # 2.4 Supplier Aksiyonları
     ("Supplier", "PROFILE", "Activation", 20, 129600, +1, False, 1),
     ("Supplier", "UPDATE_CATALOGUE", "Retention", 5, 0, 0, False, 4),
     ("Supplier", "QUOTE", "Response", 10, 60, +2, False, 20),
@@ -60,7 +57,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Supplier", "UPLOAD_POD", "Trust", 5, 0, 0, False, 10),
     ("Supplier", "DISPUTE_FREE_SETTLEMENT", "Trust", 10, 0, 0, False, 10),
     
-    # 2.5 Transporter Aksiyonları
     ("Transporter", "SET_CAPACITY", "Trigger", 5, 720, 0, False, 60),
     ("Transporter", "RETURN_TRIP", "Trigger", 15, 120, +5, False, 20),
     ("Transporter", "ACCEPT_BACKHAUL", "Response", 15, 0, 0, False, 10),
@@ -73,7 +69,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Transporter", "COMPETITIVE_PRICE", "Efficiency", 10, 0, 0, False, 10),
     ("Transporter", "DISPUTE_FREE_TRIP", "Trust", 10, 0, 0, False, 15),
     
-    # 2.6 Champion Aksiyonları
     ("Champion", "DEMAND_CREATED", "Trigger", 20, 60, +5, False, 10),
     ("Champion", "REQ_PROPAGATED", "Propagation", 10, 0, 0, False, 20),
     ("Champion", "SUPPLIER_ACTIVATED", "Activation", 15, 0, 0, False, 10),
@@ -87,7 +82,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Champion", "REACTIVATE_PROVIDER", "Retention", 15, 0, 0, False, 10),
     ("Champion", "IMPROVE_BID_SLA", "Quality", 10, 0, 0, False, 10),
     
-    # 2.7 Captain Aksiyonları
     ("Captain", "VERIFY_SIGNUP", "Growth", 2, 0, +2, False, 999),
     ("Captain", "ACTIVE_CLUSTER", "Trust", 25, 1440, +10, False, 1),
     ("Captain", "USER_ACTIVE", "Retention", 10, 0, +2, False, 999),
@@ -99,7 +93,6 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Captain", "REFERRAL_RETAINED", "Growth", 15, 0, +4, False, 20),
     ("Captain", "CAMP_CHALLENGE", "Community", 25, 1440, +5, False, 4),
 
-    # --- BÖLÜM 3: NON-REWARDABLE & PENALTY EVENTS ---
     ("All", "NR01_APP_INSTALL", "Trigger", 0, 0, 0, False, 1),
     ("All", "NR02_COSMETIC_PROFILE_EDIT", "Trigger", 0, 0, 0, False, 10),
     ("Transporter", "NR03_FAKE_BACKHAUL", "Trigger", 0, 0, -10, False, 5),
@@ -119,7 +112,6 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12               
 }
 
-# --- REASON CODES GÜNCELLEMESİ (I01-I15 EKLENDİ) ---
 REASON_CODES = [
     "APPROVED_CLEAN", "POD_INVALID", "ACTOR_FAULT", "DISPUTE_UPHELD", 
     "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED",
@@ -483,7 +475,6 @@ with tab2:
         return f'color: {color}; font-weight: bold'
     st.dataframe(df_users.style.map(color_status, subset=['Action_Status']), use_container_width=True)
 
-    # --- BÖLÜM 7: EXTERNAL FRAUD SIGNALS UI ---
     st.markdown("---")
     st.subheader("🕵️‍♂️ External Fraud & Abuse Signals (I01-I15)")
     st.caption("Simulate AI/External microservice detection for complex fraud patterns (e.g., Collusion, Device Clusters). Applies Critical Flag and reverses all points.")
@@ -536,25 +527,26 @@ with tab3:
                     st.error(msg)
             
         st.markdown("---")
-        st.caption("Inject Worker test data to exceed monthly minimums")
+        st.caption("Inject Worker test data to exceed monthly minimums (QA Multi-Day Simulator)")
         if st.button("Simulate 30/30/15 Minimums for Top 5 Workers"):
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
             workers = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
             now = datetime.datetime.now()
             for w in workers[:5]: 
-                for _ in range(30): 
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5)", (w, now))
+                for day in range(30):
+                    sim_date = now - datetime.timedelta(days=day)
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5)", (w, sim_date))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                for _ in range(30): 
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5)", (w, now))
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5)", (w, sim_date))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
-                for _ in range(15): 
-                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10)", (w, now))
+                for day in range(15): 
+                    sim_date = now - datetime.timedelta(days=day)
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10)", (w, sim_date))
                     cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
             conn.commit()
             conn.close()
-            st.success("Successfully pushed 30/30/15 SETTLED events for top 5 workers!")
+            st.success("Successfully pushed 30/30/15 Multi-Day SETTLED events for top 5 workers!")
             
     with col2:
         st.subheader("2. Admin Resolution Desk & Lifecycle Management")
@@ -614,7 +606,6 @@ with tab4:
     
     with t4_col1:
         st.markdown("### 📅 Monthly Selection Engine")
-        # --- BÖLÜM 8.5: GEOGRAPHY DISTRIBUTION ---
         c_cap1, c_cap2, c_cap3, c_cap4 = st.columns(4)
         t_cap = c_cap1.number_input("Total Winner Cap:", min_value=1, max_value=20, value=5)
         nat_cap = c_cap2.number_input("Max per Nationality:", min_value=1, max_value=10, value=2)
@@ -626,7 +617,6 @@ with tab4:
             cur = conn.cursor()
             curr_month = st.session_state.current_simulation_month
             
-            # Dynamic Score Application requires joining points here
             users_df = pd.read_sql_query("""
                 SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, u.Location,
                        u.Has_Subscription, u.Has_Certification, u.Join_Date, 
@@ -641,13 +631,11 @@ with tab4:
             for _, u in users_df.iterrows():
                 mid, role = u['Master_ID'], u['Primary_Role']
                 
-                # Integrity Check
                 if u['Integrity_Score'] < 50 or u['Action_Status'] == 'Block' or u['Critical_Flag']:
                     disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
                     continue
                 
-                # Role-Specific Qualification Gates (Bölüm 8.1 Eklendi)
                 is_qualified = True
                 cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED') GROUP BY Action_ID", (mid,))
                 counts = dict(cur.fetchall())
@@ -683,15 +671,10 @@ with tab4:
                         disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (Missing Champion targets)'})
 
                 if not is_qualified:
-                    # --- BÖLÜM 8.3: ROLLOVER SADECE KOTAYA TAKILANA VERİLİR (Burada sıfırlıyoruz) ---
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
                     continue
 
-                # --- BÖLÜM 8.4: SUBSCRIPTION COHORT LOGIC ---
-                # Ilk 3 ay abonelik komponenti inaktif (Normalized weight hesabindan cikarilir)
                 has_sub_effective = u['Has_Subscription'] if curr_month > 3 else False
-                
-                # --- BÖLÜM 8.6: DYNAMIC WEIGHT APPLICATION ---
                 weights = get_normalized_weights(has_sub_effective, u['Has_Certification'])
                 
                 cur.execute("""
@@ -714,7 +697,6 @@ with tab4:
                 w_sub = weights.get('Subscription', 0) / 100.0
                 w_cert = weights.get('Certification', 0) / 100.0
                 
-                # Dinamik Agirliklarin Skora Gercek Olarak Yansimasi
                 base_score = (habit_pts * (1 + w_habit)) + \
                              (ref_pts * (1 + w_ref)) + \
                              (mkt_pts * (1 + w_mkt)) + \
@@ -734,7 +716,6 @@ with tab4:
             winners, rollovers = [], []
             nat_counts, camp_counts, loc_counts = {}, {}, {}
             
-            # --- BÖLÜM 8.2: REPEAT-WINNER PATTERN (LOCKED OPTION B) ---
             new_cap = t_cap
             m1_cap, m2_cap, gen_rep_cap = 0, 0, 0
             if curr_month == 3:
@@ -755,13 +736,11 @@ with tab4:
                 cand_past_wins = df_past[df_past['Master_ID'] == mid]['Win_Month'].tolist()
                 is_new = len(cand_past_wins) == 0
                 
-                # 1. Kohort Engelleri
                 if curr_month == 2 and 1 in cand_past_wins:
                     cand['Reason_Code'] = 'REPEAT_COHORT_EXCLUDED'; rollovers.append(cand); continue
                 if curr_month >= 5 and (curr_month - 1) in cand_past_wins:
                     cand['Reason_Code'] = 'CONSECUTIVE_WIN_EXCLUDED'; rollovers.append(cand); continue
                     
-                # 2. Opsiyon B: Kohort Kotalari
                 cohort_approved = False
                 track_var = ""
                 
@@ -785,7 +764,6 @@ with tab4:
                 if not cohort_approved:
                     rollovers.append(cand); continue
                     
-                # 3. Dagitim Kotalari (Geography Eklendi)
                 if nat_counts.get(nat, 0) >= nat_cap: 
                     cand['Reason_Code'] = 'NATIONALITY_CAP'; rollovers.append(cand); continue
                 if camp_counts.get(camp, 0) >= camp_cap: 
@@ -793,7 +771,6 @@ with tab4:
                 if loc_counts.get(loc, 0) >= geo_cap:
                     cand['Reason_Code'] = 'GEOGRAPHY_CAP'; rollovers.append(cand); continue
                     
-                # 4. Kesin Onay ve Sayaclar
                 if len(winners) < t_cap:
                     cand['Reason_Code'] = 'APPROVED'
                     winners.append(cand)
