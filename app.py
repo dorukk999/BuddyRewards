@@ -138,9 +138,9 @@ def init_db():
                            (mid, f'User-{i}', primary_role, secondary_roles, 'Dubai', nat, cluster, True, sub, cert,
                             f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months))
             cursor.execute("INSERT INTO Integrity_Profiles (Master_ID) VALUES (?)", (mid,))
-            cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, primary_role))
+            cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?)", (mid, primary_role))
             if secondary_roles:
-                cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, secondary_roles))
+                cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?)", (mid, secondary_roles))
             cursor.execute("INSERT INTO Monthly_Qualified_Users VALUES (?, ?, ?)", (mid, 0, 0)) 
             
     conn.commit()
@@ -367,6 +367,17 @@ with tab3:
             
     with col2:
         st.subheader("2. Admin Resolution Desk & Lifecycle Management")
+        
+        # --- İŞLEM BİLGİLENDİRME MESAJI ALANI ---
+        if 'lifecycle_msg' in st.session_state and st.session_state.lifecycle_msg:
+            st.success(st.session_state.lifecycle_msg)
+            st.session_state.lifecycle_msg = "" # Mesajı bir kez gösterdikten sonra temizle
+            
+        if 'lifecycle_error' in st.session_state and st.session_state.lifecycle_error:
+            st.error(st.session_state.lifecycle_error)
+            st.session_state.lifecycle_error = ""
+        # ----------------------------------------
+
         conn = sqlite3.connect(DB_FILE)
         pending_val = pd.read_sql_query("SELECT Event_ID, Action_ID, Process_Status, Earned_Points FROM Event_Stream_Logs WHERE Process_Status IN ('VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED')", conn)
         pending_disp = pd.read_sql_query("SELECT Event_ID, Action_ID, Reason_Code FROM Event_Stream_Logs WHERE Process_Status = 'DISPUTED'", conn)
@@ -382,8 +393,10 @@ with tab3:
             
             if l_col3.button("Execute Transition", use_container_width=True): 
                 success, msg = progress_event_lifecycle(int(l_ev_id), selected_target)
-                if success: st.success(msg)
-                else: st.error(msg)
+                if success: 
+                    st.session_state.lifecycle_msg = f"🚀 {msg}" # Mesajı hafızaya yaz
+                else: 
+                    st.session_state.lifecycle_error = f"❌ {msg}" # Hatayı hafızaya yaz
                 st.rerun()
         else: st.write("No active events in pipeline.")
             
@@ -394,8 +407,16 @@ with tab3:
             d_ev_id = d_col1.selectbox("Select Disputed Event", pending_disp['Event_ID'].tolist(), key="d_sel")
             r_code = d_col2.selectbox("Reason Code", REASON_CODES, key="r_code")
             dr_col1, dr_col2 = st.columns(2)
-            if dr_col1.button("✅ Reject Dispute (Settle)", use_container_width=True): progress_event_lifecycle(d_ev_id, 'SETTLED', r_code); st.rerun()
-            if dr_col2.button("❌ Cancel Event (Reverse)", use_container_width=True): progress_event_lifecycle(d_ev_id, 'REVERSED', r_code); st.rerun()
+            if dr_col1.button("✅ Reject Dispute (Settle)", use_container_width=True): 
+                success, msg = progress_event_lifecycle(d_ev_id, 'SETTLED', r_code)
+                if success: st.session_state.lifecycle_msg = f"✅ Dispute Rejected: {msg}"
+                else: st.session_state.lifecycle_error = msg
+                st.rerun()
+            if dr_col2.button("❌ Cancel Event (Reverse)", use_container_width=True): 
+                success, msg = progress_event_lifecycle(d_ev_id, 'REVERSED', r_code)
+                if success: st.session_state.lifecycle_msg = f"❌ Event Cancelled: {msg}"
+                else: st.session_state.lifecycle_error = msg
+                st.rerun()
         else: st.write("No disputes awaiting decision.")
 
 with tab4:
@@ -495,7 +516,7 @@ with tab4:
             if winners: st.dataframe(pd.DataFrame(winners)[['Master_ID', 'Nationality', 'Camp', 'Reason_Code']], use_container_width=True)
 
     with t4_col2:
-        st.markdown("### 🌟 Mega Rewards Engine")
+        st.markdown("### 📅 Mega Rewards Engine")
         m_cert = st.checkbox("Require Certification (T02)", value=True)
         m_excl = st.checkbox("Exclude Monthly Winners", value=True)
         m_grace = st.checkbox("Apply 1-Month Grace", value=False)
