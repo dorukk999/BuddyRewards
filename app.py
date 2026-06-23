@@ -21,6 +21,7 @@ if 'cycle_status' not in st.session_state:
 
 # --- UNIVERSAL ACTION REGISTRY ---
 UNIVERSAL_ACTION_REGISTRY = [
+    # 2.1 & 2.2 Genel / Ortak Aksiyonlar & Rol Kapsamı Genişletilenler
     ("Worker, Captain, Champion", "WORKER_VIDEO_WATCH", "Retention", 5, 1440, 0, True, 30),
     ("All", "WORKER_QUIZ_ATTEMPT", "Retention", 5, 1440, 0, True, 30),
     ("All", "PASS_QUIZ", "Quality", 2, 1440, 0, False, 30),
@@ -38,6 +39,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     
     ("Worker", "FULFILL_VALIDATED", "Trust", 40, 0, +10, True, 20),
     
+    # 2.3 Contractor Aksiyonları
     ("Contractor", "POST_REQ", "Trigger", 20, 30, 0, False, 10),
     ("Contractor", "CLONE_REQ", "Trigger", 10, 0, 0, False, 5),
     ("Contractor", "RESPOND_FIRST_BID", "Response", 5, 0, 0, False, 50),
@@ -47,6 +49,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Contractor", "RATE_COUNTERPARTY", "Trust", 5, 0, 0, False, 50),
     ("Contractor", "PAY_ON_TIME", "Trust", 15, 0, 0, False, 10),
     
+    # 2.4 Supplier Aksiyonları
     ("Supplier", "PROFILE", "Activation", 20, 129600, +1, False, 1),
     ("Supplier", "UPDATE_CATALOGUE", "Retention", 5, 0, 0, False, 4),
     ("Supplier", "QUOTE", "Response", 10, 60, +2, False, 20),
@@ -57,6 +60,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Supplier", "UPLOAD_POD", "Trust", 5, 0, 0, False, 10),
     ("Supplier", "DISPUTE_FREE_SETTLEMENT", "Trust", 10, 0, 0, False, 10),
     
+    # 2.5 Transporter Aksiyonları
     ("Transporter", "SET_CAPACITY", "Trigger", 5, 720, 0, False, 60),
     ("Transporter", "RETURN_TRIP", "Trigger", 15, 120, +5, False, 20),
     ("Transporter", "ACCEPT_BACKHAUL", "Response", 15, 0, 0, False, 10),
@@ -69,6 +73,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Transporter", "COMPETITIVE_PRICE", "Efficiency", 10, 0, 0, False, 10),
     ("Transporter", "DISPUTE_FREE_TRIP", "Trust", 10, 0, 0, False, 15),
     
+    # 2.6 Champion Aksiyonları
     ("Champion", "DEMAND_CREATED", "Trigger", 20, 60, +5, False, 10),
     ("Champion", "REQ_PROPAGATED", "Propagation", 10, 0, 0, False, 20),
     ("Champion", "SUPPLIER_ACTIVATED", "Activation", 15, 0, 0, False, 10),
@@ -82,6 +87,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Champion", "REACTIVATE_PROVIDER", "Retention", 15, 0, 0, False, 10),
     ("Champion", "IMPROVE_BID_SLA", "Quality", 10, 0, 0, False, 10),
     
+    # 2.7 Captain Aksiyonları
     ("Captain", "VERIFY_SIGNUP", "Growth", 2, 0, +2, False, 999),
     ("Captain", "ACTIVE_CLUSTER", "Trust", 25, 1440, +10, False, 1),
     ("Captain", "USER_ACTIVE", "Retention", 10, 0, +2, False, 999),
@@ -93,6 +99,7 @@ UNIVERSAL_ACTION_REGISTRY = [
     ("Captain", "REFERRAL_RETAINED", "Growth", 15, 0, +4, False, 20),
     ("Captain", "CAMP_CHALLENGE", "Community", 25, 1440, +5, False, 4),
 
+    # --- BÖLÜM 3: NON-REWARDABLE & PENALTY EVENTS ---
     ("All", "NR01_APP_INSTALL", "Trigger", 0, 0, 0, False, 1),
     ("All", "NR02_COSMETIC_PROFILE_EDIT", "Trigger", 0, 0, 0, False, 10),
     ("Transporter", "NR03_FAKE_BACKHAUL", "Trigger", 0, 0, -10, False, 5),
@@ -141,6 +148,7 @@ def init_db():
         Event_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Acting_Role TEXT, Target_ID TEXT, Action_ID TEXT, 
         Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER, Reason_Code TEXT DEFAULT '')''')
         
+    # --- BÖLÜM 6: INTEGRITY STATUS BANDS (Critical Flag Eklendi) ---
     cursor.execute('''CREATE TABLE IF NOT EXISTS Integrity_Profiles (
         Master_ID TEXT PRIMARY KEY, Integrity_Score INTEGER DEFAULT 100, Action_Status TEXT DEFAULT 'Normal', Critical_Flag BOOLEAN DEFAULT 0)''')
         
@@ -529,9 +537,16 @@ with tab3:
         
         if st.button("Execute Action"):
             status, earned, msg = execute_action(u_id, a_role, act, t_id if t_id else None)
-            if status == 'VALIDATING': st.warning(msg) 
-            elif status == 'CAPPED': st.info(msg) 
-            else: st.success(msg) if status == 'SETTLED' else st.error(msg)
+            if status == 'VALIDATING': 
+                st.warning(msg) 
+            elif status == 'CAPPED': 
+                st.info(msg) 
+            else:
+                # --- PYTHON 3.14 AST HAKKINI KORUMAK İÇİN TEMİZ BLOK YAPISI ---
+                if status == 'SETTLED' or status == 'RECEIVED': 
+                    st.success(msg)
+                else: 
+                    st.error(msg)
             
         st.markdown("---")
         st.caption("Inject Worker test data to exceed monthly minimums")
@@ -690,7 +705,7 @@ with tab4:
                 else: cand['Reason_Code'] = 'WINNER_CAP_FULL'; rollovers.append(cand)
                     
             if st.session_state.rollover_mode:
-                for r in rollovers: 
+                for r in rolovers: 
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = CASE WHEN Rollover_Bonus + 5 > 15 THEN 15 ELSE Rollover_Bonus + 5 END WHERE Master_ID = ?", (r['Master_ID'],))
             
             conn.commit()
