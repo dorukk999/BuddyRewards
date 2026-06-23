@@ -138,9 +138,13 @@ def init_db():
                            (mid, f'User-{i}', primary_role, secondary_roles, 'Dubai', nat, cluster, True, sub, cert,
                             f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months))
             cursor.execute("INSERT INTO Integrity_Profiles (Master_ID) VALUES (?)", (mid,))
-            cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?)", (mid, primary_role))
+            
+            # --- THE SQLITE FIX IS HERE ---
+            cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, primary_role))
             if secondary_roles:
-                cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?)", (mid, secondary_roles))
+                cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, secondary_roles))
+            # ------------------------------
+            
             cursor.execute("INSERT INTO Monthly_Qualified_Users VALUES (?, ?, ?)", (mid, 0, 0)) 
             
     conn.commit()
@@ -516,7 +520,7 @@ with tab4:
             if winners: st.dataframe(pd.DataFrame(winners)[['Master_ID', 'Nationality', 'Camp', 'Reason_Code']], use_container_width=True)
 
     with t4_col2:
-        st.markdown("### 📅 Mega Rewards Engine")
+        st.markdown("### 🌟 Mega Rewards Engine")
         m_cert = st.checkbox("Require Certification (T02)", value=True)
         m_excl = st.checkbox("Exclude Monthly Winners", value=True)
         m_grace = st.checkbox("Apply 1-Month Grace", value=False)
