@@ -119,7 +119,7 @@ REASON_CODES = {
     "Integrity": ["SELF_REFERRAL", "COLLUSION_SUSPECTED", "DUPLICATE_IDENTITY", "VELOCITY_SPIKE", "FAKE_BACKHAUL"],
     "Monthly_Selection": ["APPROVED", "WINNER_CAP_FULL", "REPEAT_COHORT_EXCLUDED", "NATIONALITY_CAP", "GEOGRAPHY_CAP", "CAMP_CAP", "ROLLOVER_APPLIED", "QUALIFIED_NOT_FUNDED"],
     "Mega": ["MEGA_APPROVED", "MEGA_EID_FAILED", "MEGA_CERT_FAILED", "MEGA_SUBSCRIPTION_FAILED", "MEGA_INTEGRITY_FAILED", "MEGA_MONTHLY_WINNER_EXCLUDED", "MEGA_COUNTS_FAILED"],
-    "Reversal": ["CANCELLED", "ACTOR_FAULT", "DISPUTE_UPHELD", "POST_SETTLEMENT_FRAUD", "REQ_CANCELLED_INVALID", "BUYER_FAULT_CANCEL", "SUPPLIER_NON_FULFIL", "TRIP_CANCEL_ACTOR_FAULT", "POD_DISPUTED", "MEGA_POST_AWARD_REVIEW", "APPROVED_CLEAN"]
+    "Reversal": ["CANCELLED", "ACTOR_FAULT", "DISPUTE_UPHELD", "POST_SETTLEMENT_FRAUD", "REQ_CANCELLED_INVALID", "BUYER_FAULT_CANCEL", "SUPPLIER_NON_FULFIL", "TRIP_CANCEL_ACTOR_FAULT", "POD_DISPUTED", "MEGA_POST_AWARD_REVIEW", "APPROVED_CLEAN", "ATTRIBUTION_WINDOW_EXPIRED"]
 }
 FLAT_REASON_CODES = [code for category in REASON_CODES.values() for code in category]
 
@@ -291,22 +291,14 @@ def convert_df_to_csv(df):
 # --- CORE ENGINE FUNCTIONS ---
 
 def trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver, now):
-    """
-    Helps resolving BÖLÜM 1: EVENT LIFECYCLE — OUTCOME BONUS MEKANİZMASI & 
-    BÖLÜM 2.4: Champion Self-Loop Safeguard.
-    """
     msg_string = ""
     if action_id in ['FULFILLMENT', 'DELIVERY', 'SHARE_CHAIN_FULFILLED', 'CLOSE_REQ']:
-        # CHAMPION CLOSURE CHAIN
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'CHAMPION_NUDGE' AND Expiry_Date > ?", (master_id, now))
         for attr in cursor.fetchall():
             champion_id = attr[0]
-            
-            # SAFEGUARD 1: Champion aynı kişi olamaz
             if champion_id == master_id: continue
             
             if target_id:
-                # SAFEGUARD 2: Champion aynı requirement'ta supplier/contractor olarak da event üretmiş mi?
                 cursor.execute("""
                     SELECT COUNT(*) FROM Event_Stream_Logs 
                     WHERE Master_ID = ? AND Target_ID = ? 
@@ -315,7 +307,6 @@ def trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver
                 """, (champion_id, target_id))
                 if cursor.fetchone()[0] > 0: continue
                 
-                # SAFEGUARD 3: Bu requirement için daha önce closure verilmiş mi?
                 cursor.execute("""
                     SELECT COUNT(*) FROM Event_Stream_Logs 
                     WHERE Master_ID = ? AND Action_ID = 'CLOSURE' AND Target_ID = ?
@@ -331,7 +322,6 @@ def trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver
                 cursor.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Target_ID, Action_ID, Event_Timestamp, Process_Status, Earned_Points, Reason_Code, Rule_Version) VALUES (?, 'Champion', ?, 'CLOSURE', ?, 'VALIDATING', ?, 'CHAIN_ATTRIBUTION', ?)", (champion_id, target_id if target_id else master_id, now, c_pts, rule_ver))
                 msg_string += f" 🏆 (Chain Completed: CLOSURE attributed to Champion {champion_id}!)"
 
-        # PROPAGATION CHAIN
         cursor.execute("SELECT Source_ID FROM Marketplace_Attributions WHERE Target_ID = ? AND Attribution_Type = 'PROPAGATION_CHAIN' AND Expiry_Date > ?", (master_id, now))
         propagators_awarded = set()
         for attr in cursor.fetchall():
@@ -363,7 +353,6 @@ def expire_events():
     cursor = conn.cursor()
     now = datetime.datetime.now()
     
-    # 1. Normal validity window expiration
     cursor.execute("""
         UPDATE Event_Stream_Logs 
         SET Process_Status = 'EXPIRED', Reason_Code = 'VALIDITY_WINDOW_EXPIRED'
@@ -375,14 +364,12 @@ def expire_events():
     for master_id, acting_role, points in expired_events:
         cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
         
-    # --- BÖLÜM 2.1: TRANS. BACKHAUL CHAIN PROVISIONAL CHECK ---
     cursor.execute("""
         SELECT Source_ID, Attribution_ID FROM Marketplace_Attributions 
         WHERE Attribution_Type = 'BACKHAUL_PROVISIONAL' AND Expiry_Date < ?
     """, (now,))
     
     for source_id, attr_id in cursor.fetchall():
-        # Check if TR03 or TR06 exists in the window
         cursor.execute("""
             SELECT COUNT(*) FROM Event_Stream_Logs 
             WHERE Master_ID = ? AND Action_ID IN ('ACCEPT_BACKHAUL', 'DELIVERY') 
@@ -391,7 +378,6 @@ def expire_events():
         """, (source_id, now))
         
         if cursor.fetchone()[0] == 0:
-            # Gerçek trip yok — TR02 puanlarını reverse et
             cursor.execute("""
                 SELECT Event_ID, Earned_Points FROM Event_Stream_Logs 
                 WHERE Master_ID = ? AND Action_ID = 'RETURN_TRIP' 
@@ -436,7 +422,6 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
             msg_string += f" Integrity penalty applied: {impact} pts."
             
-        # --- BÖLÜM 2.3: CONTRACTOR DEMAND CHAIN (SPAM REVERSAL) ---
         if action_id == 'NR06_SPAM_REQUIREMENT' and target_id:
             cursor.execute("""
                 SELECT Event_ID, Earned_Points, Process_Status FROM Event_Stream_Logs 
@@ -497,6 +482,19 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             conn.commit(); conn.close()
             return 'BLOCKED (Fraud)', 0, "🚨 PAIR_COOLDOWN: Pair farming limit exceeded. Integrity penalty applied."
 
+    # --- BÖLÜM 3.1: REFERRAL ATTRIBUTION WINDOW ENFORCEMENT ---
+    if action_id in ['USER_ACTIVE', 'WORKER_RETAINED'] and acting_role == 'Captain' and target_id:
+        cursor.execute("""
+            SELECT COUNT(*) FROM Marketplace_Attributions 
+            WHERE Source_ID = ? AND Target_ID = ? 
+            AND Attribution_Type = 'CAPTAIN_ONBOARDING' 
+            AND Expiry_Date > ?
+        """, (master_id, target_id, now))
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("UPDATE Event_Stream_Logs SET Process_Status = 'REVERSED', Reason_Code = 'ATTRIBUTION_WINDOW_EXPIRED' WHERE Event_ID = ?", (last_event_id,))
+            conn.commit(); conn.close()
+            return 'BLOCKED (Attribution)', 0, "Attribution window (30 days) expired. No reward."
+
     if target_id:
         cursor.execute("SELECT COUNT(*) FROM Event_Stream_Logs WHERE Master_ID = ? AND Target_ID = ? AND Action_ID = ? AND Event_ID != ?", (master_id, target_id, action_id, last_event_id))
         if cursor.fetchone()[0] > 0:
@@ -504,7 +502,6 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
             conn.commit(); conn.close()
             return 'BLOCKED (Duplication)', 0, "Action Rejected: Cross-role duplication block."
 
-    # --- BÖLÜM 2.2: MULTI-PICKUP TRIP CHAIN DUPLICATE CHECK ---
     if action_id == 'COMPLETE_BUNDLED_TRIP' and target_id:
         cursor.execute("""
             SELECT COUNT(*) FROM Event_Stream_Logs 
@@ -569,7 +566,6 @@ def execute_action(master_id, acting_role, action_id, target_id=None):
     if action_id == 'WORKER_REFERRAL' and target_id and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, ?, ?)", (master_id, target_id, 'REFERRAL_ACTIVATION', now + datetime.timedelta(days=30)))
 
-    # --- BÖLÜM 2.1: BACKHAUL PROVISIONAL INSERTION ---
     if action_id == 'RETURN_TRIP' and status == 'VALIDATING':
         cursor.execute("INSERT INTO Marketplace_Attributions (Source_ID, Target_ID, Attribution_Type, Expiry_Date) VALUES (?, ?, 'BACKHAUL_PROVISIONAL', ?)", 
                        (master_id, master_id, now + datetime.timedelta(days=7)))
@@ -620,17 +616,26 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
             act_status = 'Block' if s_row[1] else ('Normal' if new_score >= 80 else 'Warning' if new_score >= 70 else 'Review' if new_score >= 50 else 'Block')
             cursor.execute("UPDATE Integrity_Profiles SET Integrity_Score = ?, Action_Status = ? WHERE Master_ID = ?", (new_score, act_status, master_id))
 
-    # --- BÖLÜM 1: OUTCOME BONUS IN LIFECYCLE TRANSITION ---        
     if target_status in ['OUTCOME_CONFIRMED', 'SETTLED'] and current_status not in ['OUTCOME_CONFIRMED', 'SETTLED']:
         if target_status == 'OUTCOME_CONFIRMED':
             reason_code = reason_code if reason_code else "OUTCOME_NOT_CONFIRMED"
         trigger_chain_attributions(cursor, master_id, target_id, action_id, rule_ver, datetime.datetime.now())
             
+    # --- BÖLÜM 3.2: CLAWBACK NEGATIVE CARRY ---
     elif target_status == 'REVERSED':
         if current_status in ['VALIDATING', 'VALIDATED', 'OUTCOME_CONFIRMED', 'DISPUTED']:
             cursor.execute("UPDATE Reward_Ledgers SET Pending_Points = Pending_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
         elif current_status == 'SETTLED':
-            cursor.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
+            cursor.execute("SELECT Settled_Points FROM Reward_Ledgers WHERE Master_ID = ? AND Role_Ledger = ?", (master_id, acting_role))
+            current_settled_row = cursor.fetchone()
+            current_settled = float(current_settled_row[0]) if current_settled_row else 0
+            if current_settled >= points:
+                cursor.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points - ?, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, points, master_id, acting_role))
+            else:
+                remaining = points - current_settled
+                cursor.execute("UPDATE Reward_Ledgers SET Settled_Points = 0, Reversed_Points = Reversed_Points + ? WHERE Master_ID = ? AND Role_Ledger = ?", (points, master_id, acting_role))
+                cursor.execute("INSERT INTO Audit_Trail (Config_Change, Timestamp, Old_Value, New_Value, Reason) VALUES (?, ?, ?, ?, ?)",
+                              (f'NEGATIVE_CARRY_{master_id}', datetime.datetime.now(), str(current_settled), str(-remaining), f'Clawback exceeded settled balance. Carry: -{remaining}'))
             
         reason_code = reason_code if reason_code else "ACTOR_FAULT"
         
@@ -887,6 +892,18 @@ with tab4:
     
     with t4_col1:
         st.markdown("### 📅 Monthly Selection Engine")
+        
+        # --- BÖLÜM 4.2 & 4.3: HABIT & MARKETPLACE GATES CONFIG ---
+        st.markdown("#### Worker Habit & Contribution Gate Thresholds")
+        th_col1, th_col2, th_col3 = st.columns(3)
+        video_threshold = th_col1.number_input("Min Videos:", min_value=1, max_value=30, value=30)
+        quiz_threshold = th_col2.number_input("Min Quizzes:", min_value=1, max_value=30, value=30)
+        referral_threshold = th_col3.number_input("Min Referrals:", min_value=1, max_value=15, value=15)
+        
+        mkt_gate_enabled = st.checkbox("Enable Marketplace Contribution Gate (Admin)", value=False)
+        mkt_min_actions = st.number_input("Min Marketplace Actions:", min_value=1, value=1, disabled=not mkt_gate_enabled)
+        
+        st.markdown("#### Distribution Caps")
         c_cap1, c_cap2, c_cap3, c_cap4 = st.columns(4)
         t_cap = c_cap1.number_input("Total Winner Cap:", min_value=1, max_value=20, value=5)
         nat_cap = c_cap2.number_input("Max per Nationality:", min_value=1, max_value=10, value=2)
@@ -930,7 +947,7 @@ with tab4:
 
             users_df = pd.read_sql_query("""
                 SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, u.Location,
-                       u.Has_Subscription, u.Has_Certification, u.Join_Date, 
+                       u.Has_Subscription, u.Has_Certification, u.Join_Date, u.Join_Month,
                        i.Integrity_Score, i.Action_Status, i.Critical_Flag,
                        m.Rollover_Bonus
                 FROM Global_Users u 
@@ -944,48 +961,66 @@ with tab4:
                 
                 if u['Integrity_Score'] < 50 or u['Action_Status'] == 'Block' or u['Critical_Flag']:
                     disqualified_pool.append({'Master_ID': mid, 'Reason': 'INTEGRITY_FAILED'})
-                    cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
-                    continue
-                
-                is_qualified = True
-                cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
-                counts = dict(cur.fetchall())
+                    is_qualified = False
+                else:
+                    is_qualified = True
+                    cur.execute("SELECT Action_ID, COUNT(*) FROM Event_Stream_Logs WHERE Master_ID=? AND (Process_Status='SETTLED' OR Cap_Cooldown_Result='CAPPED') GROUP BY Action_ID", (mid,))
+                    counts = dict(cur.fetchall())
 
-                if role == 'Worker':
-                    if counts.get('WORKER_VIDEO_WATCH',0)<30 or counts.get('WORKER_QUIZ_ATTEMPT',0)<30 or counts.get('WORKER_REFERRAL',0)<15:
-                        is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_VIDEO_MIN_FAILED'})
-                
-                elif role == 'Contractor':
-                    if counts.get('POST_REQ', 0) < 1:
-                        is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-                
-                elif role == 'Supplier':
-                    if counts.get('PROFILE', 0) < 1 and counts.get('QUOTE', 0) < 1:
-                        is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-                
-                elif role == 'Transporter':
-                    if counts.get('RETURN_TRIP', 0) < 1 and counts.get('DELIVERY', 0) < 1:
-                        is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                    if role == 'Worker':
+                        if counts.get('WORKER_VIDEO_WATCH',0) < video_threshold or counts.get('WORKER_QUIZ_ATTEMPT',0) < quiz_threshold or counts.get('WORKER_REFERRAL',0) < referral_threshold:
+                            is_qualified = False
+                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'HABIT_VIDEO_MIN_FAILED'})
                         
-                elif role == 'Captain':
-                    if counts.get('VERIFY_SIGNUP', 0) < 1 or (counts.get('ACTIVE_CLUSTER', 0) == 0 and counts.get('HIGH_RETENTION_CLUSTER', 0) == 0):
-                        is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
-                        
-                elif role == 'Champion':
-                    if counts.get('DEMAND_CREATED', 0) < 1 and counts.get('RESOLVE_UNMET_DEMAND', 0) < 1 and counts.get('CLOSURE', 0) < 1:
-                        is_qualified = False
-                        disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                        if mkt_gate_enabled and is_qualified:
+                            mkt_actions = counts.get('SUPPLIER_ADDED', 0) + counts.get('FULFILL_VALIDATED', 0) + counts.get('BUDDY_HELP', 0)
+                            if mkt_actions < mkt_min_actions:
+                                is_qualified = False
+                                disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED (Marketplace Min)'})
+                    
+                    elif role == 'Contractor':
+                        if counts.get('POST_REQ', 0) < 1:
+                            is_qualified = False
+                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                    
+                    elif role == 'Supplier':
+                        if counts.get('PROFILE', 0) < 1 and counts.get('QUOTE', 0) < 1:
+                            is_qualified = False
+                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                    
+                    elif role == 'Transporter':
+                        if counts.get('RETURN_TRIP', 0) < 1 and counts.get('DELIVERY', 0) < 1:
+                            is_qualified = False
+                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                            
+                    elif role == 'Captain':
+                        if counts.get('VERIFY_SIGNUP', 0) < 1 or (counts.get('ACTIVE_CLUSTER', 0) == 0 and counts.get('HIGH_RETENTION_CLUSTER', 0) == 0):
+                            is_qualified = False
+                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
+                            
+                    elif role == 'Champion':
+                        if counts.get('DEMAND_CREATED', 0) < 1 and counts.get('RESOLVE_UNMET_DEMAND', 0) < 1 and counts.get('CLOSURE', 0) < 1:
+                            is_qualified = False
+                            disqualified_pool.append({'Master_ID': mid, 'Reason': 'ROLE_GATE_FAILED'})
 
+                # --- BÖLÜM 4.4: ROLLOVER REQUALIFICATION ENFORCEMENT ---
                 if not is_qualified:
+                    cur.execute("SELECT Rollover_Bonus FROM Monthly_Qualified_Users WHERE Master_ID = ?", (mid,))
+                    prev_rollover_row = cur.fetchone()
+                    if prev_rollover_row and float(prev_rollover_row[0]) > 0:
+                        cur.execute("INSERT INTO Audit_Trail (Config_Change, Timestamp, Old_Value, New_Value, Reason) VALUES (?, ?, ?, '0', ?)",
+                                   (f'ROLLOVER_RESET_{mid}', datetime.datetime.now(), str(prev_rollover_row[0]), 'Requalification failed'))
                     cur.execute("UPDATE Monthly_Qualified_Users SET Rollover_Bonus = 0 WHERE Master_ID = ?", (mid,))
                     continue
 
-                has_sub_effective = u['Has_Subscription'] if curr_month > 3 else False
+                # --- BÖLÜM 4.1: SUBSCRIPTION COHORT-AWARE GATE ---
+                user_join_month = u.get('Join_Month', 1) 
+                sub_eligible_month = user_join_month + 3 
+                if curr_month >= sub_eligible_month:
+                    has_sub_effective = u['Has_Subscription']
+                else:
+                    has_sub_effective = False 
+
                 weights = get_normalized_weights(has_sub_effective, u['Has_Certification'])
                 
                 cur.execute("""
@@ -1134,7 +1169,7 @@ with tab4:
         if st.button("🚀 Run Mega Qualification & Selection", type="primary"):
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
-            workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users WHERE Primary_Role='Worker'", conn)
+            workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months, Join_Month FROM Global_Users WHERE Primary_Role='Worker'", conn)
             mega_qualified, mega_failed = [], []
             
             if mega_cycle == 1: req_months = 2 if m_grace else 3
@@ -1438,7 +1473,21 @@ with tab7:
         if op_rep.startswith("1."):
             df_report = pd.read_sql_query("SELECT * FROM Action_Registry", conn)
         elif op_rep.startswith("2."):
-            df_report = pd.read_sql_query("SELECT Master_ID, Role_Ledger, Pending_Points, Settled_Points, Reversed_Points, Rule_Version FROM Reward_Ledgers", conn)
+            # --- BÖLÜM 3.3: RAW VS REWARDED COUNT AYRIMI ---
+            df_report = pd.read_sql_query("""
+                SELECT 
+                    e.Master_ID,
+                    e.Action_ID,
+                    COUNT(*) as Raw_Event_Count,
+                    SUM(CASE WHEN e.Cap_Cooldown_Result IS NULL AND e.Process_Status NOT IN ('REVERSED', 'EXPIRED') THEN 1 ELSE 0 END) as Rewarded_Count,
+                    SUM(CASE WHEN e.Cap_Cooldown_Result = 'CAPPED' THEN 1 ELSE 0 END) as Capped_Count,
+                    SUM(CASE WHEN e.Process_Status = 'SETTLED' THEN e.Earned_Points ELSE 0 END) as Final_Points,
+                    SUM(CASE WHEN e.Process_Status = 'VALIDATING' THEN e.Earned_Points ELSE 0 END) as Pending_Points,
+                    SUM(CASE WHEN e.Process_Status = 'REVERSED' THEN e.Earned_Points ELSE 0 END) as Reversed_Points
+                FROM Event_Stream_Logs e
+                GROUP BY e.Master_ID, e.Action_ID
+                ORDER BY e.Master_ID
+            """, conn)
         elif op_rep.startswith("3."):
             df_report = pd.read_sql_query("SELECT Acting_Role, COUNT(*) as Total_Actions, SUM(Earned_Points) as Total_Points_Earned FROM Event_Stream_Logs GROUP BY Acting_Role", conn)
         elif op_rep.startswith("4."):
