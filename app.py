@@ -617,6 +617,43 @@ with tab4:
             cur = conn.cursor()
             curr_month = st.session_state.current_simulation_month
             
+            # --- HIZLI VERİ GİRİŞİ ENJEKTÖRÜ (BÖLÜM 8 TEST DESTEĞİ) ---
+            # Motor her çalıştığında, o aya ait 30 günlük eylem geçmişini işçilere otomatik yazar
+            workers_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Primary_Role='Worker'", conn)['Master_ID'].tolist()
+            base_date = datetime.datetime.now()
+            
+            for w in workers_list[:5]:
+                # Günlük frequency limitlerine takılmamak için 30 güne yayarak eylemleri simüle ediyoruz
+                for day in range(30):
+                    sim_date = base_date - datetime.timedelta(days=day)
+                    # Video İzleme (H01 - Her güne 1 adet)
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_VIDEO_WATCH', ?, 'SETTLED', 5)", (w, sim_date))
+                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
+                    # Quiz Çözme (H02 - Her güne 1 adet)
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_QUIZ_ATTEMPT', ?, 'SETTLED', 5)", (w, sim_date))
+                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 5 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
+                
+                # Referanslar (G01 - Aylık 15 adet zorunlu kota)
+                for day in range(15):
+                    sim_date = base_date - datetime.timedelta(days=day)
+                    cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Worker', 'WORKER_REFERRAL', ?, 'SETTLED', 10)", (w, sim_date))
+                    cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 10 WHERE Master_ID=? AND Role_Ledger='Worker'", (w,))
+            
+            # Diğer tüm rollere (Captain/Champion vb.) de survival gateleri geçebilmeleri için minik eylemler yazıyoruz
+            now_ts = datetime.datetime.now()
+            captains_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Captain%' OR Primary_Role='Captain'", conn)['Master_ID'].tolist()
+            for c in captains_list:
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Captain', 'VERIFY_SIGNUP', ?, 'SETTLED', 2)", (c, now_ts))
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Captain', 'ACTIVE_CLUSTER', ?, 'SETTLED', 25)", (c, now_ts))
+                cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 27 WHERE Master_ID=? AND Role_Ledger='Captain'", (c,))
+                
+            champions_list = pd.read_sql_query("SELECT Master_ID FROM Global_Users WHERE Secondary_Roles LIKE '%Champion%' OR Primary_Role='Champion'", conn)['Master_ID'].tolist()
+            for ch in champions_list:
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Champion', 'DEMAND_CREATED', ?, 'SETTLED', 20)", (ch, now_ts))
+                cur.execute("INSERT INTO Event_Stream_Logs (Master_ID, Acting_Role, Action_ID, Event_Timestamp, Process_Status, Earned_Points) VALUES (?, 'Champion', 'CLOSURE', ?, 'SETTLED', 50)", (ch, now_ts))
+                cur.execute("UPDATE Reward_Ledgers SET Settled_Points = Settled_Points + 70 WHERE Master_ID=? AND Role_Ledger='Champion'", (ch,))
+            # --------------------------------------------------------
+
             users_df = pd.read_sql_query("""
                 SELECT u.Master_ID, u.Primary_Role, u.Nationality, u.Labor_Cluster, u.Location,
                        u.Has_Subscription, u.Has_Certification, u.Join_Date, 
