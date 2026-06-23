@@ -112,7 +112,6 @@ MEGA_TARGETS = {
     'SUPPLIER_ADDED': 50, 'FULFILL_VALIDATED': 10, 'BUDDY_HELP': 12               
 }
 
-# --- REASON CODES GÜNCELLEMESİ (BÖLÜM 10 EKLENDİ) ---
 REASON_CODES = [
     "APPROVED_CLEAN", "POD_INVALID", "ACTOR_FAULT", "DISPUTE_UPHELD", 
     "POST_SETTLEMENT_FRAUD", "PROOF_MISSING", "DUPLICATE_PROVIDER", "COLLUSION_SUSPECTED",
@@ -129,11 +128,13 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
+    # --- BÖLÜM 11.1: EKSİK ALANLAR EKLENDİ ---
     cursor.execute('''CREATE TABLE IF NOT EXISTS Global_Users (
         Master_ID TEXT PRIMARY KEY, Name TEXT, Primary_Role TEXT, Secondary_Roles TEXT, Location TEXT, Nationality TEXT, 
         Labor_Cluster TEXT, Consent_Given BOOLEAN, Has_Subscription BOOLEAN, Has_Certification BOOLEAN,
         EID TEXT, Phone TEXT, Device_Fingerprint TEXT, EID_Verified BOOLEAN, 
-        Join_Date DATETIME, Continuous_Paid_Months INTEGER)''')
+        Join_Date DATETIME, Continuous_Paid_Months INTEGER,
+        Join_Month INTEGER, Geography TEXT, Company TEXT)''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Action_Registry (
         Action_ID TEXT PRIMARY KEY, Role TEXT, Category TEXT, Base_Points INTEGER, Cooldown INTEGER, 
@@ -141,14 +142,16 @@ def init_db():
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Event_Stream_Logs (
         Event_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Acting_Role TEXT, Target_ID TEXT, Action_ID TEXT, 
-        Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER, Reason_Code TEXT DEFAULT '')''')
+        Event_Timestamp DATETIME, Process_Status TEXT, Earned_Points INTEGER, Reason_Code TEXT DEFAULT '',
+        Object_ID TEXT, Source_Module TEXT, Raw_Points INTEGER, Awarded_Points INTEGER, Cap_Cooldown_Result TEXT, Rule_Version TEXT)''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Integrity_Profiles (
         Master_ID TEXT PRIMARY KEY, Integrity_Score INTEGER DEFAULT 100, Action_Status TEXT DEFAULT 'Normal', Critical_Flag BOOLEAN DEFAULT 0)''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Ledgers (
         Ledger_ID INTEGER PRIMARY KEY AUTOINCREMENT, Master_ID TEXT, Role_Ledger TEXT,
-        Pending_Points INTEGER DEFAULT 0, Settled_Points INTEGER DEFAULT 0, Reversed_Points INTEGER DEFAULT 0)''')
+        Pending_Points INTEGER DEFAULT 0, Settled_Points INTEGER DEFAULT 0, Reversed_Points INTEGER DEFAULT 0,
+        Event_ID INTEGER, Rule_Version TEXT, Reason_Code TEXT)''')
         
     cursor.execute('''CREATE TABLE IF NOT EXISTS Monthly_Qualified_Users (
         Master_ID TEXT PRIMARY KEY, Total_Score REAL, Rollover_Bonus REAL DEFAULT 0)''')
@@ -167,7 +170,78 @@ def init_db():
         Cycle_ID INTEGER PRIMARY KEY AUTOINCREMENT, Month_ID INTEGER, Status TEXT,
         Sub_Revenue REAL, Market_Revenue REAL, Ops_Costs REAL, Budget_Ceiling REAL,
         Profit_Margin_Pct REAL, Fixed_Profit_Floor REAL, Mega_Provision REAL,
-        Max_Affordable_Pool REAL, Approved_Reward_Pool REAL)''')
+        Max_Affordable_Pool REAL, Approved_Reward_Pool REAL,
+        Rule_Version TEXT, Currency TEXT DEFAULT 'AED', Profit_Mode TEXT DEFAULT 'HYBRID',
+        Refund_Reserve REAL DEFAULT 0, Other_Reserves REAL DEFAULT 0, Created_By TEXT, Config_Hash TEXT)''')
+
+    # --- BÖLÜM 11.2: TAMAMEN EKSİK TABLOLAR EKLENDİ ---
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Attribution_Records (
+        Attribution_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Referrer_ID TEXT, Captain_ID TEXT, Champion_ID TEXT, Campaign_ID TEXT, Share_Chain_ID TEXT,
+        Attribution_Start DATETIME, Attribution_End DATETIME, Attribution_Reason TEXT)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Marketplace_Records (
+        Record_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Requirement_ID TEXT, Bid_ID TEXT, Order_ID TEXT, Fulfillment_ID TEXT, Transporter_ID TEXT,
+        Payment_Status TEXT, POD_Status TEXT, Dispute_Status TEXT, Cancellation_Fault TEXT)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Trip_Records (
+        Trip_ID TEXT PRIMARY KEY,
+        Origin TEXT, Destination TEXT, Return_Leg BOOLEAN, Capacity TEXT, Bundle_ID TEXT,
+        Route_Baseline_KM REAL, Actual_KM REAL, Empty_KM_Saving REAL,
+        Pickup_Timestamp DATETIME, Delivery_Timestamp DATETIME)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Cycle_Snapshots (
+        Snapshot_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Month INTEGER, Master_ID TEXT, Qualification_Flags TEXT, Component_Scores TEXT,
+        Normalized_Weights TEXT, Rollover_Amount REAL, Repeat_Cohort TEXT,
+        Distribution_Group TEXT, Winner_Outcome TEXT, Rule_Version TEXT)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Audit_Trail (
+        Audit_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Config_Change TEXT, Admin_Override TEXT, Reviewer TEXT, Timestamp DATETIME,
+        Old_Value TEXT, New_Value TEXT, Reason TEXT)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Revenue_Snapshots (
+        Snapshot_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Cycle_ID INTEGER, Source_Type TEXT, Gross_Amount REAL, Collected_Amount REAL,
+        Failed_Amount REAL, Refunded_Amount REAL, Settlement_Status TEXT, Snapshot_Time DATETIME)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Cost_Snapshots (
+        Snapshot_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Cycle_ID INTEGER, Cost_Type TEXT, Amount REAL, Basis TEXT, Source_System TEXT, Snapshot_Time DATETIME)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Inventory (
+        Reward_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Funding_Source TEXT, Sponsor_ID TEXT, Benefit_Type TEXT, Face_Value REAL, Actual_Buddy_Cost REAL,
+        Available_Qty INTEGER, Reserved_Qty INTEGER, Expiry DATETIME, Redemption_Terms TEXT)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Scenarios (
+        Scenario_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Cycle_ID INTEGER, Strategy TEXT, Input_JSON TEXT, Funded_Winner_Count INTEGER,
+        Registered_Coverage REAL, Qualified_Coverage REAL, Reward_Face_Value REAL,
+        Actual_Cost REAL, Projected_Profit REAL, Projected_Margin REAL, Warnings TEXT)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Tier_Allocations (
+        Allocation_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Scenario_ID INTEGER, Tier_ID TEXT, Reward_ID INTEGER, Winner_Count INTEGER,
+        Unit_Face_Value REAL, Unit_Actual_Cost REAL, Total_Actual_Cost REAL)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Cycle_Approvals (
+        Approval_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Cycle_ID INTEGER, Action TEXT, Actor_ID TEXT, Role TEXT, Timestamp DATETIME,
+        Comments TEXT, Prior_State TEXT, New_State TEXT, Config_Hash TEXT)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Reward_Financial_Outcomes (
+        Outcome_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Cycle_ID INTEGER, Approved_Pool REAL, Issued_Cost REAL, Redeemed_Cost REAL,
+        Expired_Cost REAL, Reversed_Cost REAL, Sponsor_Receivable REAL, Final_Profit_Impact REAL)''')
+
+    cursor.execute('''CREATE TABLE IF NOT EXISTS Qualified_User_Funding (
+        ID INTEGER PRIMARY KEY AUTOINCREMENT,
+        Cycle_ID INTEGER, User_ID TEXT, Eligibility_Status TEXT, Selection_Status TEXT,
+        Funding_Status TEXT, Tier_ID TEXT, Reason_Code TEXT, Rollover_Status TEXT)''')
+
 
     cursor.execute("SELECT COUNT(*) FROM Global_Users")
     if cursor.fetchone()[0] == 0:
@@ -196,9 +270,12 @@ def init_db():
             join_date = datetime.datetime.now() - datetime.timedelta(days=random.randint(10, 200))
             paid_months = random.randint(0, 8) if sub else 0
             
-            cursor.execute("""INSERT INTO Global_Users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+            # --- 19 Sütunluk Yeni Ekleme Formatı ---
+            cursor.execute("""INSERT INTO Global_Users VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
                            (mid, f'User-{i}', primary_role, secondary_roles, loc, nat, cluster, True, sub, cert,
-                            f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months))
+                            f'EID789{i}', f'+9715012345{i:02d}', f'DEV-FP-{i}', True, join_date, paid_months,
+                            join_date.month, loc, f"Company-{i}"))
+            
             cursor.execute("INSERT INTO Integrity_Profiles (Master_ID, Critical_Flag) VALUES (?, 0)", (mid,))
             
             cursor.execute("INSERT INTO Reward_Ledgers (Master_ID, Role_Ledger) VALUES (?, ?)", (mid, primary_role))
@@ -431,7 +508,6 @@ def progress_event_lifecycle(event_id, target_status, reason_code=""):
             
         reason_code = reason_code if reason_code else "FAILED_PROOF_OR_FRAUD"
         
-        # --- BÖLÜM 10: SCENARIO-BASED REVERSAL & INTEGRITY IMPACT ---
         penalty = 0
         set_critical = False
         if reason_code == 'SUPPLIER_NON_FULFIL': penalty = -15
@@ -853,7 +929,6 @@ with tab4:
         m_excl = st.checkbox("Exclude Monthly Winners", value=True)
         m_grace = st.checkbox("Apply 1-Month Grace", value=False)
         
-        # --- BÖLÜM 9.1 & 9.2: MEGA DYNAMIC CONTROLS ---
         mc_col1, mc_col2 = st.columns(2)
         mega_cycle = mc_col1.selectbox("Mega Cycle:", [1, 2, 3], format_func=lambda x: f"Cycle {x} (M4-{x*6 if x<3 else 18})")
         mega_cap = mc_col2.number_input("Mega Winner Cap:", min_value=1, value=3)
@@ -875,7 +950,6 @@ with tab4:
             workers = pd.read_sql_query("SELECT Master_ID, EID_Verified, Has_Certification, Continuous_Paid_Months FROM Global_Users WHERE Primary_Role='Worker'", conn)
             mega_qualified, mega_failed = [], []
             
-            # 9.1 Subscription Continuity 
             if mega_cycle == 1: req_months = 2 if m_grace else 3
             elif mega_cycle == 2: req_months = 8 if m_grace else 9
             else: req_months = 14 if m_grace else 15
@@ -903,12 +977,10 @@ with tab4:
                 if fail_reason: 
                     mega_failed.append({'Master_ID': mid, 'Reason_Code': fail_reason})
                 else: 
-                    # 9.3 Rollover'in Mega'ya Etkisi Yok - Sadece saf Base Score hesaplanıyor
                     cur.execute("SELECT COALESCE(SUM(Earned_Points), 0) FROM Event_Stream_Logs WHERE Master_ID=? AND Process_Status IN ('SETTLED', 'CAPPED')", (mid,))
                     base_mega_score = cur.fetchone()[0]
                     mega_qualified.append({'Master_ID': mid, 'Mega_Score': base_mega_score, 'Reason_Code': 'QUALIFIED'})
             
-            # 9.2 Mega Selection Engine
             mega_qualified.sort(key=lambda x: x['Mega_Score'], reverse=True)
             
             final_mega_winners = []
